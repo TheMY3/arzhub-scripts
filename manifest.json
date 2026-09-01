@@ -1,1 +1,22 @@
-{"scripts": []}
+{
+  "scripts": [
+    {
+      "id": "inventory-plus",
+      "name": "Inventory Plus",
+      "filename": "[TheMY3] Inventory Plus.lua",
+      "legacy_filenames": [],
+      "version": "2.3.0",
+      "path": "scripts/inventory-plus.lua",
+      "topic": "https://www.blast.hk/threads/255785/",
+      "actual": true,
+      "changelog": [
+        {
+          "version": "2.3.0",
+          "notes": [
+            "Поиск теперь понимает разделитель % — можно искать сразу несколько предметов одним запросом."
+          ]
+        }
+      ]
+    }
+  ]
+}
