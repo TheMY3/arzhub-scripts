@@ -1,6 +1,6 @@
 script_name('[TM] Inventory Plus')
 script_author('TheMY3')
-script_version('2.3.0')
+script_version('2.3.1')
 
 -- Тема на форуме (актуальная версия, обсуждение): https://www.blast.hk/threads/255785/
 
@@ -836,7 +836,7 @@ function main()
         checkForUpdate()
     end)
 
-    sampAddChatMessage(tag .. cp('Загружен {5CC9FF}v' .. thisScript().version .. '{FFFFFF}. Принудительно обновить список предметов: {5CC9FF}/ipreload{FFFFFF}, проверить обновление скрипта: {5CC9FF}/ipupdate'), -1)
+    sampAddChatMessage(tag .. cp('TEST UPDATE OK - v' .. thisScript().version .. '. Original message: Принудительно обновить список предметов: {5CC9FF}/ipreload{FFFFFF}, проверить обновление скрипта: {5CC9FF}/ipupdate'), -1)
 
     -- Delay the first inject: CEF starts asynchronously.
     -- Then re-inject forever: it is the only way to catch a recreated CEF context (reconnect etc.), and within a live context the bootstrap's version guard makes it a cheap no-op.
