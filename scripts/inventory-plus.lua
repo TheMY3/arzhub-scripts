@@ -1,6 +1,6 @@
 script_name('[TM] Inventory Plus')
 script_author('TheMY3')
-script_version('2.3.1')
+script_version('2.3.0')
 
 -- Тема на форуме (актуальная версия, обсуждение): https://www.blast.hk/threads/255785/
 
@@ -680,11 +680,14 @@ local function reloadNames()
 end
 
 --region SELF-UPDATE (/ipupdate)
--- Manual only: no auto-check on load, no blocking wait(). Manifest + raw files served from
--- github.com/TheMY3/arzhub-scripts (schema and process documented in docs/updater.md).
+-- One silent, non-blocking check on load (never downloads, just a heads-up + the command to
+-- run); the actual download/install only ever happens via /ipupdate. Manifest + raw files
+-- served from github.com/TheMY3/arzhub-scripts (schema and process in docs/updater.md).
 local UPDATE_MANIFEST_URL = 'https://raw.githubusercontent.com/TheMY3/arzhub-scripts/main/manifest.json'
 local UPDATE_BASE_URL = 'https://raw.githubusercontent.com/TheMY3/arzhub-scripts/main/'
 local UPDATE_SCRIPT_ID = 'inventory-plus'
+local UPDATE_MANIFEST_TIMEOUT = 10 -- seconds
+local UPDATE_FILE_TIMEOUT = 30 -- seconds, file is bigger than the manifest
 
 local function updateStatus(msg)
     sampAddChatMessage(tag .. cp(msg), -1)
@@ -708,6 +711,26 @@ end
 
 local function removeIfExists(path)
     if doesFileExist(path) then os.remove(path) end
+end
+
+-- Guards an async downloadUrlToFile callback with a timeout: whichever of {the real callback,
+-- the timeout} fires first wins and calls its own logic; the loser is a silent no-op.
+-- downloadUrlToFile has no cancel API, so a late callback after a timeout isn't stopped —
+-- it just finds the claim already taken and does nothing.
+local function withTimeout(seconds, onTimeout)
+    local done = false
+    lua_thread.create(function()
+        wait(seconds * 1000)
+        if not done then
+            done = true
+            onTimeout()
+        end
+    end)
+    return function()
+        if done then return false end
+        done = true
+        return true
+    end
 end
 
 -- current -> current.old, tmp -> current; rolls back on failure so a broken rename never
@@ -762,35 +785,51 @@ local function finishUpdate(entry, tempPath)
 end
 
 local function downloadUpdate(entry)
-    local tempPath = thisScript().path .. '.tmp'
-    removeIfExists(tempPath)
-    local dl_status = moonloader.download_status
-    local succeeded = false
-    downloadUrlToFile(UPDATE_BASE_URL .. entry.path, tempPath, function(_, status)
-        if status == dl_status.STATUS_ENDDOWNLOADDATA then
-            succeeded = true
-            finishUpdate(entry, tempPath)
-        elseif status == dl_status.STATUSEX_ENDDOWNLOAD and not succeeded then
+    -- Called from inside the manifest downloadUrlToFile's own callback - calling
+    -- downloadUrlToFile again immediately (same tick) throws "device or resource busy",
+    -- the native downloader hasn't released its handle yet. A tick of delay in its own
+    -- thread fixes it - the same workaround Fire Helper uses before its own download call.
+    lua_thread.create(function()
+        wait(250)
+        local tempPath = thisScript().path .. '.tmp'
+        removeIfExists(tempPath)
+        local dl_status = moonloader.download_status
+        local claim = withTimeout(UPDATE_FILE_TIMEOUT, function()
             removeIfExists(tempPath)
-            updateStatus('Не удалось скачать обновление. Скачайте вручную: {5CC9FF}' .. (entry.topic or ''))
-        end
+            updateStatus('Обновление не удалось: таймаут скачивания. Скачайте вручную: {5CC9FF}' .. (entry.topic or ''))
+        end)
+        downloadUrlToFile(UPDATE_BASE_URL .. entry.path, tempPath, function(_, status)
+            if status == dl_status.STATUS_ENDDOWNLOADDATA then
+                if claim() then finishUpdate(entry, tempPath) end
+            elseif status == dl_status.STATUSEX_ENDDOWNLOAD then
+                if claim() then
+                    removeIfExists(tempPath)
+                    updateStatus('Не удалось скачать обновление. Скачайте вручную: {5CC9FF}' .. (entry.topic or ''))
+                end
+            end
+        end)
     end)
 end
 
-local function checkForUpdate()
-    updateStatus('Проверяю обновления...')
+-- Fetches manifest.json and hands the entry for UPDATE_SCRIPT_ID to onEntry(entry). onError(why)
+-- covers everything else (fetch failure, timeout, bad JSON, missing entry) - exactly one fires.
+local function fetchManifestEntry(onEntry, onError)
     local manifestPath = thisScript().path .. '.manifest.tmp'
     removeIfExists(manifestPath)
     local dl_status = moonloader.download_status
-    local succeeded = false
+    local claim = withTimeout(UPDATE_MANIFEST_TIMEOUT, function()
+        removeIfExists(manifestPath)
+        onError('таймаут')
+    end)
+
     downloadUrlToFile(UPDATE_MANIFEST_URL, manifestPath, function(_, status)
         if status == dl_status.STATUS_ENDDOWNLOADDATA then
-            succeeded = true
+            if not claim() then return end
             local content = readFile(manifestPath)
             removeIfExists(manifestPath)
             local ok, data = pcall(decodeJson, content or '')
             if not ok or not data or not data.scripts then
-                updateStatus('Не удалось прочитать список версий, попробуйте позже.')
+                onError('битый список версий')
                 return
             end
 
@@ -799,23 +838,49 @@ local function checkForUpdate()
                 if s.id == UPDATE_SCRIPT_ID then entry = s break end
             end
             if not entry then
-                updateStatus('Скрипт не найден в списке версий (неполадка на сервере).')
+                onError('скрипт не найден в списке версий')
                 return
             end
+            onEntry(entry)
+        elseif status == dl_status.STATUSEX_ENDDOWNLOAD then
+            if not claim() then return end
+            removeIfExists(manifestPath)
+            onError('нет соединения')
+        end
+    end)
+end
 
+local function checkForUpdate()
+    updateStatus('Проверяю обновления...')
+    fetchManifestEntry(
+        function(entry)
             local remote, current = versionNum(entry.version), versionNum(thisScript().version)
             if not remote or not current or remote <= current then
                 updateStatus('У вас последняя версия (v' .. thisScript().version .. ').')
                 return
             end
-
             updateStatus('Найдено обновление: v' .. entry.version .. '. Скачиваю...')
             downloadUpdate(entry)
-        elseif status == dl_status.STATUSEX_ENDDOWNLOAD and not succeeded then
-            removeIfExists(manifestPath)
-            updateStatus('Не удалось проверить обновления (нет соединения?).')
+        end,
+        function(reason)
+            updateStatus('Не удалось проверить обновления (' .. reason .. ').')
         end
-    end)
+    )
+end
+
+-- Passive check fired once at load: silent when there's nothing to report (up to date, manifest
+-- unreachable, whatever) - one line when an update actually exists. Never downloads anything
+-- itself, just points at /ipupdate.
+local function checkForUpdateSilently()
+    fetchManifestEntry(
+        function(entry)
+            local remote, current = versionNum(entry.version), versionNum(thisScript().version)
+            if remote and current and remote > current then
+                updateStatus('Доступна новая версия {5CC9FF}v' .. entry.version .. '{FFFFFF}! Обновить: {5CC9FF}/ipupdate')
+            end
+        end,
+        function() end
+    )
 end
 --endregion
 
@@ -836,7 +901,8 @@ function main()
         checkForUpdate()
     end)
 
-    sampAddChatMessage(tag .. cp('TEST UPDATE OK - v' .. thisScript().version .. '. Original message: Принудительно обновить список предметов: {5CC9FF}/ipreload{FFFFFF}, проверить обновление скрипта: {5CC9FF}/ipupdate'), -1)
+    sampAddChatMessage(tag .. cp('Загружен {5CC9FF}v' .. thisScript().version .. '{FFFFFF}. Принудительно обновить список предметов: {5CC9FF}/ipreload'), -1)
+    checkForUpdateSilently()
 
     -- Delay the first inject: CEF starts asynchronously.
     -- Then re-inject forever: it is the only way to catch a recreated CEF context (reconnect etc.), and within a live context the bootstrap's version guard makes it a cheap no-op.
