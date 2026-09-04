@@ -5,7 +5,7 @@
       "name": "Inventory Plus",
       "filename": "[TheMY3] Inventory Plus.lua",
       "legacy_filenames": [],
-      "version": "2.3.0",
+      "version": "2.4.0",
       "path": "scripts/inventory-plus.lua",
       "topic": "https://www.blast.hk/threads/255785/",
       "actual": true,
@@ -14,6 +14,12 @@
           "version": "2.3.0",
           "notes": [
             "Поиск теперь понимает разделитель % — можно искать сразу несколько предметов одним запросом."
+          ]
+        },
+        {
+          "version": "2.4.0",
+          "notes": [
+            "Добавлена скрытая команда /ipexport — выгружает содержимое открытого шкафа/склада/багажника в текстовый файл (moonloader\\dumps\\inventory-plus)."
           ]
         }
       ]
