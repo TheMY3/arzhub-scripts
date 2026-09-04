@@ -1,6 +1,6 @@
 script_name('[TM] Inventory Plus')
 script_author('TheMY3')
-script_version('2.4.0')
+script_version('2.3.1')
 
 -- Тема на форуме (актуальная версия, обсуждение): https://www.blast.hk/threads/255785/
 
@@ -17,8 +17,7 @@ local tag = '{FFA500}[TM] Inventory Plus{FFFFFF}: '
 -- Если с 'all' словарь грузится слишком долго или не грузится вовсе (в поиске висит «ЗАГРУЗКА...» или «СПИСОК НЕ ЗАГРУЖЕН») — поменяйте на 'market' (менять только слово в кавычках) и перезапустите игру.
 local DICT_MODE = 'all'
 
--- Lavka + wardrobe/warehouse/trunk: search, sort, name dictionary, MAX button in buy/sell dialogs.
-local WAREHOUSE_JS = ([[
+local BOOTSTRAP_JS = ([[
 (() => {
     const VERSION = '__VERSION__';
     //region CONFIG & TEARDOWN — selectors, prior/legacy instance cleanup, shared state
@@ -656,198 +655,6 @@ local WAREHOUSE_JS = ([[
 })();
 ]]):gsub('__VERSION__', thisScript().version):gsub('__DICT_MODE__', DICT_MODE)
 
--- The player's own "Инвентарь" window: separate script, separate evalcef() call (own 32767-byte budget) —
--- own class names (.inventory-main__grid, not .warehouse__grid), no ПКМ menu in lavka/wardrobe/warehouse at
--- all, so pin only makes sense here.
-local INVENTORY_JS = ([[
-(() => {
-    const VERSION = '__VERSION__';
-    const GRID_SEL = '.inventory-main__grid > .inventory-grid';
-    const PIN_KEY = 'tm-invplus-pin-v1';
-    const PIN_BTN_CLASS = 'tm-pin-btn';
-    const PIN_TEXT = '\u0417\u0430\u043a\u0440\u0435\u043f\u0438\u0442\u044c'; // Закрепить
-    const UNPIN_TEXT = '\u041e\u0442\u043a\u0440\u0435\u043f\u0438\u0442\u044c'; // Открепить
-
-    const prev = window.__tmInvPin;
-    if (prev) {
-        if (prev.version === VERSION) { prev.kick(); return; }
-        try { clearInterval(prev.iv); } catch (e) {}
-        try { if (prev.obs) prev.obs.disconnect(); } catch (e) {}
-        window.__tmInvPin = null;
-    }
-
-    // Pin is by item TYPE id, not per-stack instance - the server never exposes an instance id for ordinary
-    // items (docs/inventory.md's unic_id note), so pinning one stack pins every stack of that type.
-    let pinned = new Set();
-    try { pinned = new Set(JSON.parse(localStorage.getItem(PIN_KEY) || '[]')); } catch (e) {}
-    const savePinned = () => { try { localStorage.setItem(PIN_KEY, JSON.stringify(Array.from(pinned))); } catch (e) {} };
-
-    const getGrid = () => document.querySelector(GRID_SEL);
-    const cellId = (hoc) => {
-        const img = hoc.querySelector('img.inventory-item__image');
-        const a = img && (img.getAttribute('alt') || '').match(/(\d+)/);
-        return a ? a[1] : null;
-    };
-
-    const applyPinSort = () => {
-        const grid = getGrid();
-        const gridGrid = grid && grid.querySelector('.inventory-grid__grid');
-        if (!gridGrid) return;
-        const cells = Array.from(gridGrid.querySelectorAll('.inventory-item-hoc'));
-        if (!cells.length) return;
-
-        if (pinned.size) {
-            // Garbage-collect ids for items no longer anywhere in this grid (consumed/traded away).
-            const present = new Set();
-            cells.forEach((c) => { const id = cellId(c); if (id) present.add(id); });
-            let changed = false;
-            pinned.forEach((id) => { if (!present.has(id)) { pinned.delete(id); changed = true; } });
-            if (changed) savePinned();
-        }
-
-        let max = 0; // remember the server order so unpinning restores it
-        cells.forEach((c) => { const v = parseInt(c.dataset.tmPinIdx || '', 10) || 0; if (v > max) max = v; });
-        cells.forEach((c) => { if (!c.dataset.tmPinIdx) c.dataset.tmPinIdx = String(++max); });
-        const orig = (c) => parseInt(c.dataset.tmPinIdx, 10) || 0;
-        const isPinned = (c) => { const id = cellId(c); return !!(id && pinned.has(id)); };
-
-        // Badge position is mirrored off the native top-right .inventory-item__activity-icon (its computed
-        // right becomes our left), so it lines up at any resolution - the game sizes everything with a fluid
-        // vw formula, fixed px would drift. One probe per pass: getComputedStyle per cell froze the UI before.
-        let probe = null;
-        const badgeStyle = (item) => {
-            if (probe !== null) return probe;
-            probe = false;
-            const native = item.querySelector('.inventory-item__activity-icon');
-            if (!native) return probe;
-            try {
-                const cs = getComputedStyle(native);
-                if (cs.right && cs.right !== 'auto' && cs.top && cs.top !== 'auto') {
-                    probe = { top: cs.top, left: cs.right, fontSize: cs.fontSize };
-                }
-            } catch (e) {}
-            return probe;
-        };
-
-        // pointer-events:none like the warehouse name banner, so it never intercepts a native click.
-        cells.forEach((c) => {
-            const item = c.querySelector('.inventory-item');
-            let ic = c.querySelector('.tm-pin-icon');
-            if (!item) return;
-            if (isPinned(c)) {
-                if (!ic) {
-                    if (!item.style.position) item.style.position = 'relative';
-                    ic = document.createElement('i');
-                    ic.className = 'tm-pin-icon icon-pin';
-                    const s = ic.style;
-                    const p = badgeStyle(item);
-                    s.position = 'absolute';
-                    s.top = p ? p.top : '6%';
-                    s.left = p ? p.left : '6%';
-                    if (p) s.fontSize = p.fontSize;
-                    s.color = '#fff';
-                    s.textShadow = '0 0 2px rgba(0,0,0,0.8)';
-                    s.pointerEvents = 'none';
-                    s.zIndex = '5';
-                    item.appendChild(ic);
-                }
-            } else if (ic) {
-                ic.remove();
-            }
-        });
-
-        // Locked (unpurchased) expansion slots are .inventory-grid__item-bg, not .inventory-item-hoc, and they
-        // live at the end of the grid. Re-appending items would leave those placeholders sitting in front, so
-        // items go before the first non-item child instead (insertBefore(null) == appendChild when there is none).
-        const anchor = Array.from(gridGrid.children).find((el) => !el.classList.contains('inventory-item-hoc')) || null;
-
-        const target = cells.slice().sort((a, b) => {
-            const pa = isPinned(a) ? 1 : 0, pb = isPinned(b) ? 1 : 0;
-            return pa !== pb ? pb - pa : orig(a) - orig(b);
-        });
-        for (let i = 0; i < target.length; i++) {
-            if (target[i] !== cells[i]) { target.forEach((c) => gridGrid.insertBefore(c, anchor)); return; }
-        }
-    };
-
-    // The menu wrapper (.inventory-item-context-menu-wrapper) lands as a sibling of the right-clicked cell
-    // inside the same .inventory-grid__grid, and that cell gets .inventory-item--active - found via a live
-    // /debug_dom with the menu open (2026-08-31).
-    const enhanceContextMenu = () => {
-        const grid = getGrid();
-        const gridGrid = grid && grid.querySelector('.inventory-grid__grid');
-        const buttons = gridGrid && gridGrid.querySelector('.inventory-info__buttons');
-        if (!buttons) return;
-
-        // Don't duplicate a future official pin entry, if Arizona ever ships one.
-        const already = Array.from(buttons.children).some((el) => {
-            if (el.classList.contains(PIN_BTN_CLASS)) return false;
-            const t = (el.textContent || '').trim();
-            return t === PIN_TEXT || t === UNPIN_TEXT;
-        });
-        if (already) return;
-
-        const active = gridGrid.querySelector('.inventory-item--active');
-        const hoc = active && active.closest('.inventory-item-hoc');
-        const id = hoc && cellId(hoc);
-        if (!id) return; // can't resolve the target item - don't inject a button that would do nothing
-
-        let btn = buttons.querySelector('.' + PIN_BTN_CLASS);
-        if (!btn) {
-            btn = document.createElement('div');
-            btn.className = 'inventory-info__button ' + PIN_BTN_CLASS;
-            const inner = document.createElement('div');
-            inner.className = 'inventory-button inventory-button--default inventory-button--context';
-            const icon = document.createElement('i');
-            icon.className = 'inventory-button__icon icon-pin inventory-button__icon--small';
-            const text = document.createElement('div');
-            text.className = 'inventory-button__text inventory-button__text--absolute tm-pin-text';
-            inner.appendChild(icon);
-            inner.appendChild(text);
-            btn.appendChild(inner);
-            btn.addEventListener('click', () => {
-                const curId = btn.dataset.tmItemId;
-                if (!curId) return;
-                if (pinned.has(curId)) pinned.delete(curId); else pinned.add(curId);
-                savePinned();
-                applyPinSort();
-                // Native buttons close the menu themselves; ours doesn't hook into that, so trigger the
-                // native "Закрыть" button (still the last child - we insert before it) instead of reimplementing it.
-                const closeBtn = buttons.lastElementChild;
-                const closeInner = closeBtn && closeBtn.querySelector('.inventory-button');
-                (closeInner || closeBtn).click();
-            });
-            buttons.insertBefore(btn, buttons.lastElementChild); // keep the native "Закрыть" last
-        }
-        btn.dataset.tmItemId = id;
-        const textEl = btn.querySelector('.tm-pin-text');
-        const label = pinned.has(id) ? UNPIN_TEXT : PIN_TEXT;
-        if (textEl.textContent !== label) textEl.textContent = label;
-    };
-
-    let obs = null;
-    const kick = () => {
-        const cur = window.__tmInvPin;
-        if (!cur || cur.version !== VERSION) return;
-        if (obs) obs.disconnect();
-        try { try { applyPinSort(); } catch (e) {} try { enhanceContextMenu(); } catch (e) {} }
-        finally { if (obs) obs.observe(document.body, { childList: true, subtree: true }); }
-    };
-
-    let kickPending = false;
-    const scheduleKick = () => {
-        if (kickPending) return;
-        kickPending = true;
-        setTimeout(() => { kickPending = false; kick(); }, 50);
-    };
-
-    obs = new MutationObserver(scheduleKick);
-    const iv = setInterval(kick, 1500);
-    window.__tmInvPin = { version: VERSION, kick, obs, iv };
-    kick();
-})();
-]]):gsub('__VERSION__', thisScript().version)
-
 local function evalcef(code, encoded)
     -- Code length is written as Int16 -> hard cap of 32767 bytes.
     if type(code) ~= 'string' or code == '' or #code > 32767 then return false end
@@ -864,8 +671,7 @@ local function evalcef(code, encoded)
 end
 
 local function inject()
-    evalcef(WAREHOUSE_JS)
-    evalcef(INVENTORY_JS)
+    evalcef(BOOTSTRAP_JS)
 end
 
 -- The dictionary lives in JS; this forces a re-fetch past every cache.
@@ -873,26 +679,86 @@ local function reloadNames()
     evalcef("(()=>{if(window.__tmInvPlus&&window.__tmInvPlus.reloadNames)window.__tmInvPlus.reloadNames();})()")
 end
 
---region SELF-UPDATE
+--region PACKET CAPTURE - hidden /ipexport: buffer container snapshots straight off the wire (220/17).
+-- Human labels for the type ids confirmed so far; not an allowlist, an unlisted type still exports as "type_N".
+local CONTAINER_LABELS = {
+    [1] = 'Инвентарь',
+    [5] = 'Шкаф дома',
+    [7] = 'Мусорка',
+    [8] = 'Багажник',
+    [13] = 'Лавка',
+    [49] = 'Склад уличный',
+}
 
--- One silent, non-blocking check on load (never downloads, just a heads-up + the command to run); the actual download/install only ever happens via command.
--- Manifest + raw files served from github for now, but later want to try change it to myself.
-local UPDATE_MANIFEST_URL = 'https://raw.githubusercontent.com/TheMY3/arzhub-scripts/main/manifest.json'
-local UPDATE_BASE_URL = 'https://raw.githubusercontent.com/TheMY3/arzhub-scripts/main/'
-local UPDATE_SCRIPT_ID = 'inventory-plus'
-local UPDATE_MANIFEST_TIMEOUT = 10 -- seconds
-local UPDATE_FILE_TIMEOUT = 30 -- seconds, file is bigger than the manifest
+-- ASCII-only, filenames stay Latin (Windows + non-UTF8 io.open path is unverified with Cyrillic). Only for types with a confirmed label above - unconfirmed ones keep the type_N filename.
+local CONTAINER_SLUGS = {
+    [1] = 'inventory',
+    [5] = 'shkaf_doma',
+    [7] = 'musorka',
+    [8] = 'bagazhnik',
+    [13] = 'lavka',
+    [49] = 'sklad_ulichny',
+}
 
-local function updateStatus(msg)
-    sampAddChatMessage(tag .. cp(msg), -1)
+-- Every inventory-style grid renders 5 columns.
+local GRID_COLUMNS = 5
+
+local invBuf = {}        -- invBuf[type][slot] = {item = id, amount = n}, accumulate, never wipe wholesale.
+local lastOpenType = nil -- type of the container whose action:0 (full snapshot) arrived most recently, i.e. what's open right now.
+
+local function mergeItems(itemType, items)
+    local slots = invBuf[itemType]
+    if not slots then
+        slots = {}
+        invBuf[itemType] = slots
+    end
+    for _, it in ipairs(items) do
+        if it.item then
+            slots[it.slot] = { item = it.item, amount = it.amount }
+        else
+            slots[it.slot] = nil -- absent "item" field is the server's own clear-this-slot signal
+        end
+    end
 end
 
--- "2.10.0" -> 2010000, so remote/local compare numerically instead of lexicographically. Nothing to keep in sync manually, unlike a stored version_num.
-local function versionNum(v)
-    local a, b, c = tostring(v or ''):match('^(%d+)%.(%d+)%.(%d+)$')
-    if not a then return nil end
-    return tonumber(a) * 1000000 + tonumber(b) * 1000 + tonumber(c)
+-- Packet 220, sub-command 17 in. evalcef()'s own emulated packets lack the leading ignored byte real server packets carry, so they safely misalign and bail at the subtype check below.
+function onReceivePacket(id, bs)
+    if id ~= 220 or not bs then return end
+    if raknetBitStreamGetNumberOfBytesUsed(bs) < 3 then return end
+    raknetBitStreamIgnoreBits(bs, 8)
+    if raknetBitStreamReadInt8(bs) ~= 17 then return end
+    raknetBitStreamIgnoreBits(bs, 32)
+    local length = raknetBitStreamReadInt16(bs)
+    local encoded = raknetBitStreamReadInt8(bs)
+    local str = (encoded ~= 0)
+        and raknetBitStreamDecodeString(bs, length + encoded)
+        or raknetBitStreamReadString(bs, length)
+    if not str or not str:find('event.inventory.playerInventory', 1, true) then return end
+
+    local payload = str:match('`(.+)`')
+    if not payload then return end
+    local ok, msgs = pcall(decodeJson, payload)
+    if not ok or not msgs then return end
+
+    for _, msg in ipairs(msgs) do
+        local data = msg.data
+        if data and data.items then
+            mergeItems(data.type, data.items)
+            if msg.action == 0 then lastOpenType = data.type end
+        end
+    end
 end
+
+-- Separate from the JS-side dictionary (used for the search UI) - fetched once via plain Lua HTTP, cached to disk.
+local DICT_CACHE_DIR = getWorkingDirectory() .. '\\config\\TheMY3\\inventory-plus'
+local DICT_CACHE_PATH = DICT_CACHE_DIR .. '\\items-' .. DICT_MODE .. '.json'
+local DICT_URL = 'https://arzhub.top/api/public/marketplace/items/' .. DICT_MODE
+
+-- The .txt output is for the human to open, not for the script itself - kept out of config (settings/cache) in its own top-level folder, same spirit as Debug.lua's config\cef_dumps.
+local EXPORT_DIR = getWorkingDirectory() .. '\\dumps\\inventory-plus'
+
+local namesCache = nil -- nil until resolved once; then kept for the rest of the session
+local namesFetching = false
 
 local function readFile(path)
     local f = io.open(path, 'rb')
@@ -902,198 +768,141 @@ local function readFile(path)
     return content
 end
 
-local function removeIfExists(path)
-    if doesFileExist(path) then os.remove(path) end
+local function loadNamesFromDisk()
+    local content = readFile(DICT_CACHE_PATH)
+    if not content then return nil end
+    local ok, data = pcall(decodeJson, content)
+    if ok and data and data.items then return data.items end
+    return nil
 end
 
--- Guards an async downloadUrlToFile callback with a timeout: whichever of {the real callback, the timeout} fires first wins and calls its own logic; the loser is a silent no-op.
--- downloadUrlToFile has no cancel API, so a late callback after a timeout isn't stopped — it just finds the claim already taken and does nothing.
-local function withTimeout(seconds, onTimeout)
-    local done = false
+local DICT_FETCH_TIMEOUT = 10 -- seconds
+local pendingNameCallbacks = {}
+
+local function resolvePendingNames(names)
+    local cbs = pendingNameCallbacks
+    pendingNameCallbacks = {}
+    for _, cb in ipairs(cbs) do cb(names) end
+end
+
+-- Lazy on purpose - only /ipexport ever calls this, so a user who never runs the command never triggers a fetch.
+-- onDone(names) fires once resolved: synchronously for a warm cache, or after the download/timeout race for a cold one - the caller never needs to retry by hand.
+local function fetchNamesDict(onDone)
+    if namesCache then onDone(namesCache) return end
+    local cached = loadNamesFromDisk()
+    if cached then namesCache = cached onDone(namesCache) return end
+
+    pendingNameCallbacks[#pendingNameCallbacks + 1] = onDone
+    if namesFetching then return end -- already in flight, just queued behind it
+
+    namesFetching = true
+    sampAddChatMessage(tag .. cp('Качаю словарь имён (разово за сессию)...'), -1)
+    if not doesDirectoryExist(DICT_CACHE_DIR) then createDirectory(DICT_CACHE_DIR) end
+
+    local claimed = false
     lua_thread.create(function()
-        wait(seconds * 1000)
-        if not done then
-            done = true
-            onTimeout()
-        end
+        wait(DICT_FETCH_TIMEOUT * 1000)
+        if claimed then return end
+        claimed = true
+        namesFetching = false
+        resolvePendingNames(nil)
     end)
-    return function()
-        if done then return false end
-        done = true
-        return true
-    end
-end
 
--- current -> current.old, tmp -> current; rolls back on failure so a broken rename never leaves neither file in place. current.old is left behind on success as a manual-recovery
--- copy.
-local function atomicReplace(targetPath, tempPath)
-    local oldPath = targetPath .. '.old'
-    removeIfExists(oldPath)
-    if not os.rename(targetPath, oldPath) then
-        return false, 'не смог отложить текущий файл в сторону'
-    end
-    if not os.rename(tempPath, targetPath) then
-        os.rename(oldPath, targetPath) -- rollback
-        return false, 'не смог поставить новый файл на место, откатил обратно'
-    end
-    return true
-end
-
-local function finishUpdate(entry, tempPath)
-    local content = readFile(tempPath)
-    local gotVersion = content and content:match("script_version%(['\"]([%d%.]+)['\"]%)")
-
-    if not gotVersion then
-        removeIfExists(tempPath)
-        updateStatus('Обновление не удалось: скачанный файл не похож на скрипт. Скачайте вручную: {5CC9FF}' .. (entry.topic or ''))
-        return
-    end
-    if gotVersion == thisScript().version then
-        -- Manifest already points at the new version but the raw.githubusercontent.com CDN
-        -- edge is still serving the previous file — a stale-cache race, not a real failure.
-        removeIfExists(tempPath)
-        updateStatus('CDN ещё отдаёт старую версию, попробуйте через пару минут: {5CC9FF}/ipupdate')
-        return
-    end
-    if gotVersion ~= entry.version then
-        removeIfExists(tempPath)
-        updateStatus('Обновление не удалось: версия в файле (' .. gotVersion .. ') не совпадает с манифестом (' .. entry.version .. ').')
-        return
-    end
-
-    local ok, err = atomicReplace(thisScript().path, tempPath)
-    if not ok then
-        removeIfExists(tempPath)
-        updateStatus('Обновление не удалось: ' .. err .. '. Скачайте вручную: {5CC9FF}' .. (entry.topic or ''))
-        return
-    end
-
-    updateStatus('Обновлено до {5CC9FF}v' .. entry.version .. '{FFFFFF}, перезагружаю скрипт...')
-    lua_thread.create(function()
-        wait(300)
-        thisScript():reload()
-    end)
-end
-
-local function downloadUpdate(entry)
-    -- Called from inside the manifest downloadUrlToFile's own callback - calling downloadUrlToFile again immediately (same tick) throws "device or resource busy",
-    -- the native downloader hasn't released its handle yet. A tick of delay in its own thread fixes it - the same workaround Fire Helper uses before its own download call.
-    lua_thread.create(function()
-        wait(250)
-        local tempPath = thisScript().path .. '.tmp'
-        removeIfExists(tempPath)
-        local dl_status = moonloader.download_status
-        local claim = withTimeout(UPDATE_FILE_TIMEOUT, function()
-            removeIfExists(tempPath)
-            updateStatus('Обновление не удалось: таймаут скачивания. Скачайте вручную: {5CC9FF}' .. (entry.topic or ''))
-        end)
-        downloadUrlToFile(UPDATE_BASE_URL .. entry.path, tempPath, function(_, status)
-            if status == dl_status.STATUS_ENDDOWNLOADDATA then
-                if claim() then finishUpdate(entry, tempPath) end
-            elseif status == dl_status.STATUSEX_ENDDOWNLOAD then
-                if claim() then
-                    removeIfExists(tempPath)
-                    updateStatus('Не удалось скачать обновление. Скачайте вручную: {5CC9FF}' .. (entry.topic or ''))
-                end
-            end
-        end)
-    end)
-end
-
--- Fetches manifest.json and hands the entry for UPDATE_SCRIPT_ID to onEntry(entry).
--- onError(why) covers everything else (fetch failure, timeout, bad JSON, missing entry) - exactly one fires.
-local function fetchManifestEntry(onEntry, onError)
-    local manifestPath = thisScript().path .. '.manifest.tmp'
-    removeIfExists(manifestPath)
     local dl_status = moonloader.download_status
-    local claim = withTimeout(UPDATE_MANIFEST_TIMEOUT, function()
-        removeIfExists(manifestPath)
-        onError('таймаут')
-    end)
-
-    downloadUrlToFile(UPDATE_MANIFEST_URL, manifestPath, function(_, status)
-        if status == dl_status.STATUS_ENDDOWNLOADDATA then
-            if not claim() then return end
-            local content = readFile(manifestPath)
-            removeIfExists(manifestPath)
-            local ok, data = pcall(decodeJson, content or '')
-            if not ok or not data or not data.scripts then
-                onError('битый список версий')
-                return
-            end
-
-            local entry
-            for _, s in ipairs(data.scripts) do
-                if s.id == UPDATE_SCRIPT_ID then entry = s break end
-            end
-            if not entry then
-                onError('скрипт не найден в списке версий')
-                return
-            end
-            onEntry(entry)
-        elseif status == dl_status.STATUSEX_ENDDOWNLOAD then
-            if not claim() then return end
-            removeIfExists(manifestPath)
-            onError('нет соединения')
-        end
+    downloadUrlToFile(DICT_URL, DICT_CACHE_PATH, function(_, status)
+        if claimed then return end -- timeout already fired first
+        claimed = true
+        namesFetching = false
+        if status == dl_status.STATUS_ENDDOWNLOADDATA then namesCache = loadNamesFromDisk() end
+        resolvePendingNames(namesCache)
     end)
 end
 
-local function checkForUpdate()
-    updateStatus('Проверяю обновления...')
-    fetchManifestEntry(
-        function(entry)
-            -- Strictly "remote > local", not "remote ~= local" - downgrade is intentionally unsupported here (a manifest rollback would otherwise fight a newer local dev
-            -- build). Picking an older release on purpose is a separate, not-yet-built path: explicit version argument, fetched from that version's GitHub Release asset
-            -- (github.com/TheMY3/arzhub-scripts/releases/download/inventory-plus-vX.Y.Z/...), not from entry.path (which always serves the latest).
-            local remote, current = versionNum(entry.version), versionNum(thisScript().version)
-            if not remote or not current or remote <= current then
-                updateStatus('У вас последняя версия (v' .. thisScript().version .. ').')
-                return
-            end
-            updateStatus('Найдено обновление: v' .. entry.version .. '. Скачиваю...')
-            downloadUpdate(entry)
-        end,
-        function(reason)
-            updateStatus('Не удалось проверить обновления (' .. reason .. ').')
-        end
-    )
+local function containerLabel(t)
+    return CONTAINER_LABELS[t] or ('type_' .. tostring(t))
 end
 
--- Passive check fired once at load: silent when there's nothing to report (up to date, manifest unreachable, whatever) - one line when an update actually exists. Never downloads
--- anything itself, just points at the update command.
-local function checkForUpdateSilently()
-    fetchManifestEntry(
-        function(entry)
-            local remote, current = versionNum(entry.version), versionNum(thisScript().version)
-            if remote and current and remote > current then
-                updateStatus('Доступна новая версия {5CC9FF}v' .. entry.version .. '{FFFFFF}! Обновить: {5CC9FF}/ipupdate')
-            end
-        end,
-        function() end
-    )
+local function exportFilename(t)
+    local slug = CONTAINER_SLUGS[t] or ('type_' .. tostring(t))
+    return EXPORT_DIR .. '\\' .. os.date('%Y%m%d_%H%M%S') .. '_' .. slug .. '.txt'
+end
+
+-- Chat display only - the real path handed to io.open stays the full one from exportFilename().
+local function shortPath(p)
+    local wd = getWorkingDirectory()
+    if p:sub(1, #wd) == wd then return 'moonloader' .. p:sub(#wd + 1) end
+    return p
+end
+
+local UTF8_BOM = '\239\187\191'
+
+local function doExport()
+    if not lastOpenType or not invBuf[lastOpenType] then
+        sampAddChatMessage(tag .. cp('Сначала открой шкаф/склад/багажник (или любое другое окно с предметами) и повтори {5CC9FF}/ipexport'), -1)
+        return
+    end
+
+    fetchNamesDict(function(names)
+        if not names then
+            sampAddChatMessage(tag .. cp('Не удалось скачать словарь имён (нет сети или таймаут). Повтори {5CC9FF}/ipexport{FFFFFF}.'), -1)
+            return
+        end
+
+        -- One line per occupied slot, never merged by item id - the point is "what's in which cell", not a total count.
+        local slots = {}
+        for slot in pairs(invBuf[lastOpenType]) do slots[#slots + 1] = slot end
+        table.sort(slots)
+
+        if #slots == 0 then
+            sampAddChatMessage(tag .. cp('Контейнер пуст, экспортировать нечего.'), -1)
+            return
+        end
+
+        if not doesDirectoryExist(EXPORT_DIR) then createDirectory(EXPORT_DIR) end
+
+        -- Both the header and item names below are already UTF-8 on disk, no cp() - that decodes CP1251, which is what SAMP chat wants but corrupts a plain UTF-8 text file.
+        local lines = {
+            containerLabel(lastOpenType) .. ' - ' .. os.date('%Y-%m-%d %H:%M') .. ', слотов занято: ' .. #slots,
+            '',
+        }
+        -- Blank line at every row boundary, mirroring the grid's own 5-column layout (GRID_COLUMNS) - lets a line's position on screen be read straight off the file.
+        local lastRow = nil
+        for _, slot in ipairs(slots) do
+            local row = math.floor(slot / GRID_COLUMNS)
+            if lastRow and row ~= lastRow then lines[#lines + 1] = '' end
+            lastRow = row
+            local entry = invBuf[lastOpenType][slot]
+            local nm = names[tostring(entry.item)] or ('ID:' .. entry.item)
+            -- 1-based slot number as the line label - not a running count, so gaps (empty slots) stay visible instead of hiding which cells are empty.
+            lines[#lines + 1] = (slot + 1) .. '. ' .. nm .. ' x' .. (entry.amount or 0)
+        end
+
+        local fname = exportFilename(lastOpenType)
+        local f = io.open(fname, 'wb')
+        if not f then
+            sampAddChatMessage(tag .. cp('Не удалось создать файл экспорта.'), -1)
+            return
+        end
+        f:write(UTF8_BOM .. table.concat(lines, '\r\n'))
+        f:close()
+
+        sampAddChatMessage(tag .. cp('Экспортировано слотов: ') .. #slots .. cp(' -> {5CC9FF}') .. shortPath(fname), -1)
+    end)
 end
 --endregion
 
 function main()
     while not isSampAvailable() do wait(0) end
 
-    -- Remnants of an interrupted update (game closed mid-download etc.) — clean before anything else.
-    removeIfExists(thisScript().path .. '.tmp')
-    removeIfExists(thisScript().path .. '.old')
-    removeIfExists(thisScript().path .. '.manifest.tmp')
-
     sampRegisterChatCommand('ipreload', function()
         reloadNames()
         sampAddChatMessage(tag .. cp('Запущено обновление списка предметов... Результат можно узнать, открыв любое окно с предметами.'), -1)
     end)
 
-    sampRegisterChatCommand('ipupdate', function()
-        checkForUpdate()
-    end)
+    -- Intentionally not advertised in the boot message below - hidden command.
+    sampRegisterChatCommand('ipexport', doExport)
 
     sampAddChatMessage(tag .. cp('Загружен {5CC9FF}v' .. thisScript().version .. '{FFFFFF}. Принудительно обновить список предметов: {5CC9FF}/ipreload'), -1)
-    checkForUpdateSilently()
 
     -- Delay the first inject: CEF starts asynchronously.
     -- Then re-inject forever: it is the only way to catch a recreated CEF context (reconnect etc.), and within a live context the bootstrap's version guard makes it a cheap no-op.
