@@ -1,6 +1,6 @@
 script_name('[TM] Inventory Plus')
 script_author('TheMY3')
-script_version('2.3.1')
+script_version('2.3.2')
 
 -- Тема на форуме (актуальная версия, обсуждение): https://www.blast.hk/threads/255785/
 
@@ -1091,8 +1091,8 @@ function main()
     while not isSampAvailable() do wait(0) end
 
     -- Remnants of an interrupted update (game closed mid-download etc.) — clean before anything else.
+    -- .old is deliberately not touched: it is the previous build, the only way back from an update that turned out broken. One generation at most - atomicReplace overwrites it every time. MoonLoader will not pick it up, the extension is not .lua.
     removeIfExists(thisScript().path .. '.tmp')
-    removeIfExists(thisScript().path .. '.old')
     removeIfExists(thisScript().path .. '.manifest.tmp')
 
     sampRegisterChatCommand('ipreload', function()
