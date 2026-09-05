@@ -1,6 +1,6 @@
 script_name('[TM] Inventory Plus')
 script_author('TheMY3')
-script_version('2.3.0')
+script_version('2.3.1')
 
 -- Тема на форуме (актуальная версия, обсуждение): https://www.blast.hk/threads/255785/
 
@@ -679,10 +679,222 @@ local function reloadNames()
     evalcef("(()=>{if(window.__tmInvPlus&&window.__tmInvPlus.reloadNames)window.__tmInvPlus.reloadNames();})()")
 end
 
---region SELF-UPDATE (/ipupdate)
--- One silent, non-blocking check on load (never downloads, just a heads-up + the command to
--- run); the actual download/install only ever happens via /ipupdate. Manifest + raw files
--- served from github.com/TheMY3/arzhub-scripts (schema and process in docs/updater.md).
+--region PACKET CAPTURE - hidden /ipexport: buffer container snapshots straight off the wire (220/17).
+-- Human labels for the type ids confirmed so far; not an allowlist, an unlisted type still exports as "type_N".
+local CONTAINER_LABELS = {
+    [1] = 'Инвентарь',
+    [5] = 'Шкаф дома',
+    [7] = 'Мусорка',
+    [8] = 'Багажник',
+    [13] = 'Лавка',
+    [49] = 'Склад уличный',
+}
+
+-- ASCII-only, filenames stay Latin (Windows + non-UTF8 io.open path is unverified with Cyrillic). Only for types with a confirmed label above - unconfirmed ones keep the type_N filename.
+local CONTAINER_SLUGS = {
+    [1] = 'inventory',
+    [5] = 'shkaf_doma',
+    [7] = 'musorka',
+    [8] = 'bagazhnik',
+    [13] = 'lavka',
+    [49] = 'sklad_ulichny',
+}
+
+-- Every inventory-style grid renders 5 columns.
+local GRID_COLUMNS = 5
+
+local invBuf = {}        -- invBuf[type][slot] = {item = id, amount = n}, accumulate, never wipe wholesale.
+local lastOpenType = nil -- type of the container whose action:0 (full snapshot) arrived most recently, i.e. what's open right now.
+
+local function mergeItems(itemType, items)
+    local slots = invBuf[itemType]
+    if not slots then
+        slots = {}
+        invBuf[itemType] = slots
+    end
+    for _, it in ipairs(items) do
+        if it.item then
+            slots[it.slot] = { item = it.item, amount = it.amount }
+        else
+            slots[it.slot] = nil -- absent "item" field is the server's own clear-this-slot signal
+        end
+    end
+end
+
+-- Packet 220, sub-command 17 in. evalcef()'s own emulated packets lack the leading ignored byte real server packets carry, so they safely misalign and bail at the subtype check below.
+function onReceivePacket(id, bs)
+    if id ~= 220 or not bs then return end
+    if raknetBitStreamGetNumberOfBytesUsed(bs) < 3 then return end
+    raknetBitStreamIgnoreBits(bs, 8)
+    if raknetBitStreamReadInt8(bs) ~= 17 then return end
+    raknetBitStreamIgnoreBits(bs, 32)
+    local length = raknetBitStreamReadInt16(bs)
+    local encoded = raknetBitStreamReadInt8(bs)
+    local str = (encoded ~= 0)
+        and raknetBitStreamDecodeString(bs, length + encoded)
+        or raknetBitStreamReadString(bs, length)
+    if not str or not str:find('event.inventory.playerInventory', 1, true) then return end
+
+    local payload = str:match('`(.+)`')
+    if not payload then return end
+    local ok, msgs = pcall(decodeJson, payload)
+    if not ok or not msgs then return end
+
+    for _, msg in ipairs(msgs) do
+        local data = msg.data
+        if data and data.items then
+            mergeItems(data.type, data.items)
+            if msg.action == 0 then lastOpenType = data.type end
+        end
+    end
+end
+
+-- Separate from the JS-side dictionary (used for the search UI) - fetched once via plain Lua HTTP, cached to disk.
+local DICT_CACHE_DIR = getWorkingDirectory() .. '\\config\\TheMY3\\inventory-plus'
+local DICT_CACHE_PATH = DICT_CACHE_DIR .. '\\items-' .. DICT_MODE .. '.json'
+local DICT_URL = 'https://arzhub.top/api/public/marketplace/items/' .. DICT_MODE
+
+-- The .txt output is for the human to open, not for the script itself - kept out of config (settings/cache) in its own top-level folder, same spirit as Debug.lua's config\cef_dumps.
+local EXPORT_DIR = getWorkingDirectory() .. '\\dumps\\inventory-plus'
+
+local namesCache = nil -- nil until resolved once; then kept for the rest of the session
+local namesFetching = false
+
+local function readFile(path)
+    local f = io.open(path, 'rb')
+    if not f then return nil end
+    local content = f:read('*a')
+    f:close()
+    return content
+end
+
+local function loadNamesFromDisk()
+    local content = readFile(DICT_CACHE_PATH)
+    if not content then return nil end
+    local ok, data = pcall(decodeJson, content)
+    if ok and data and data.items then return data.items end
+    return nil
+end
+
+local DICT_FETCH_TIMEOUT = 10 -- seconds
+local pendingNameCallbacks = {}
+
+local function resolvePendingNames(names)
+    local cbs = pendingNameCallbacks
+    pendingNameCallbacks = {}
+    for _, cb in ipairs(cbs) do cb(names) end
+end
+
+-- Lazy on purpose - only /ipexport ever calls this, so a user who never runs the command never triggers a fetch.
+-- onDone(names) fires once resolved: synchronously for a warm cache, or after the download/timeout race for a cold one - the caller never needs to retry by hand.
+local function fetchNamesDict(onDone)
+    if namesCache then onDone(namesCache) return end
+    local cached = loadNamesFromDisk()
+    if cached then namesCache = cached onDone(namesCache) return end
+
+    pendingNameCallbacks[#pendingNameCallbacks + 1] = onDone
+    if namesFetching then return end -- already in flight, just queued behind it
+
+    namesFetching = true
+    sampAddChatMessage(tag .. cp('Качаю словарь имён (разово за сессию)...'), -1)
+    if not doesDirectoryExist(DICT_CACHE_DIR) then createDirectory(DICT_CACHE_DIR) end
+
+    local claimed = false
+    lua_thread.create(function()
+        wait(DICT_FETCH_TIMEOUT * 1000)
+        if claimed then return end
+        claimed = true
+        namesFetching = false
+        resolvePendingNames(nil)
+    end)
+
+    local dl_status = moonloader.download_status
+    downloadUrlToFile(DICT_URL, DICT_CACHE_PATH, function(_, status)
+        if claimed then return end -- timeout already fired first
+        claimed = true
+        namesFetching = false
+        if status == dl_status.STATUS_ENDDOWNLOADDATA then namesCache = loadNamesFromDisk() end
+        resolvePendingNames(namesCache)
+    end)
+end
+
+local function containerLabel(t)
+    return CONTAINER_LABELS[t] or ('type_' .. tostring(t))
+end
+
+local function exportFilename(t)
+    local slug = CONTAINER_SLUGS[t] or ('type_' .. tostring(t))
+    return EXPORT_DIR .. '\\' .. os.date('%Y%m%d_%H%M%S') .. '_' .. slug .. '.txt'
+end
+
+-- Chat display only - the real path handed to io.open stays the full one from exportFilename().
+local function shortPath(p)
+    local wd = getWorkingDirectory()
+    if p:sub(1, #wd) == wd then return 'moonloader' .. p:sub(#wd + 1) end
+    return p
+end
+
+local UTF8_BOM = '\239\187\191'
+
+local function doExport()
+    if not lastOpenType or not invBuf[lastOpenType] then
+        sampAddChatMessage(tag .. cp('Сначала открой шкаф/склад/багажник (или любое другое окно с предметами) и повтори {5CC9FF}/ipexport'), -1)
+        return
+    end
+
+    fetchNamesDict(function(names)
+        if not names then
+            sampAddChatMessage(tag .. cp('Не удалось скачать словарь имён (нет сети или таймаут). Повтори {5CC9FF}/ipexport{FFFFFF}.'), -1)
+            return
+        end
+
+        -- One line per occupied slot, never merged by item id - the point is "what's in which cell", not a total count.
+        local slots = {}
+        for slot in pairs(invBuf[lastOpenType]) do slots[#slots + 1] = slot end
+        table.sort(slots)
+
+        if #slots == 0 then
+            sampAddChatMessage(tag .. cp('Контейнер пуст, экспортировать нечего.'), -1)
+            return
+        end
+
+        if not doesDirectoryExist(EXPORT_DIR) then createDirectory(EXPORT_DIR) end
+
+        -- Both the header and item names below are already UTF-8 on disk, no cp() - that decodes CP1251, which is what SAMP chat wants but corrupts a plain UTF-8 text file.
+        local lines = {
+            containerLabel(lastOpenType) .. ' - ' .. os.date('%Y-%m-%d %H:%M') .. ', слотов занято: ' .. #slots,
+            '',
+        }
+        -- Blank line at every row boundary, mirroring the grid's own 5-column layout (GRID_COLUMNS) - lets a line's position on screen be read straight off the file.
+        local lastRow = nil
+        for _, slot in ipairs(slots) do
+            local row = math.floor(slot / GRID_COLUMNS)
+            if lastRow and row ~= lastRow then lines[#lines + 1] = '' end
+            lastRow = row
+            local entry = invBuf[lastOpenType][slot]
+            local nm = names[tostring(entry.item)] or ('ID:' .. entry.item)
+            -- 1-based slot number as the line label - not a running count, so gaps (empty slots) stay visible instead of hiding which cells are empty.
+            lines[#lines + 1] = (slot + 1) .. '. ' .. nm .. ' x' .. (entry.amount or 0)
+        end
+
+        local fname = exportFilename(lastOpenType)
+        local f = io.open(fname, 'wb')
+        if not f then
+            sampAddChatMessage(tag .. cp('Не удалось создать файл экспорта.'), -1)
+            return
+        end
+        f:write(UTF8_BOM .. table.concat(lines, '\r\n'))
+        f:close()
+
+        sampAddChatMessage(tag .. cp('Экспортировано слотов: ') .. #slots .. cp(' -> {5CC9FF}') .. shortPath(fname), -1)
+    end)
+end
+--endregion
+
+--region SELF-UPDATE
+
+-- One silent, non-blocking check on load (never downloads, just a heads-up + the command to run); the actual download/install only ever happens via command.
+-- Manifest + raw files served from github for now, but later want to try change it to myself.
 local UPDATE_MANIFEST_URL = 'https://raw.githubusercontent.com/TheMY3/arzhub-scripts/main/manifest.json'
 local UPDATE_BASE_URL = 'https://raw.githubusercontent.com/TheMY3/arzhub-scripts/main/'
 local UPDATE_SCRIPT_ID = 'inventory-plus'
@@ -693,30 +905,21 @@ local function updateStatus(msg)
     sampAddChatMessage(tag .. cp(msg), -1)
 end
 
--- "2.10.0" -> 2010000, so remote/local compare numerically instead of lexicographically
--- ("2.10.0" < "2.9.0" as strings). Nothing to keep in sync manually, unlike a stored version_num.
+-- "2.10.0" -> 2010000, so remote/local compare numerically instead of lexicographically. Nothing to keep in sync manually, unlike a stored version_num.
 local function versionNum(v)
     local a, b, c = tostring(v or ''):match('^(%d+)%.(%d+)%.(%d+)$')
     if not a then return nil end
     return tonumber(a) * 1000000 + tonumber(b) * 1000 + tonumber(c)
 end
 
-local function readFile(path)
-    local f = io.open(path, 'rb')
-    if not f then return nil end
-    local content = f:read('*a')
-    f:close()
-    return content
-end
-
+-- Unguarded on purpose: with doesFileExist in front, leftovers (.old, .manifest.tmp) were seen surviving
+-- the cleanup, and removing a file that is not there is a harmless no-op anyway.
 local function removeIfExists(path)
-    if doesFileExist(path) then os.remove(path) end
+    return os.remove(path)
 end
 
--- Guards an async downloadUrlToFile callback with a timeout: whichever of {the real callback,
--- the timeout} fires first wins and calls its own logic; the loser is a silent no-op.
--- downloadUrlToFile has no cancel API, so a late callback after a timeout isn't stopped —
--- it just finds the claim already taken and does nothing.
+-- Guards an async downloadUrlToFile callback with a timeout: whichever of {the real callback, the timeout} fires first wins and calls its own logic; the loser is a silent no-op.
+-- downloadUrlToFile has no cancel API, so a late callback after a timeout isn't stopped — it just finds the claim already taken and does nothing.
 local function withTimeout(seconds, onTimeout)
     local done = false
     lua_thread.create(function()
@@ -733,8 +936,8 @@ local function withTimeout(seconds, onTimeout)
     end
 end
 
--- current -> current.old, tmp -> current; rolls back on failure so a broken rename never
--- leaves neither file in place. current.old is left behind on success as a manual-recovery copy.
+-- current -> current.old, tmp -> current; rolls back on failure so a broken rename never leaves neither file in place. current.old is left behind on success as a manual-recovery
+-- copy.
 local function atomicReplace(targetPath, tempPath)
     local oldPath = targetPath .. '.old'
     removeIfExists(oldPath)
@@ -785,10 +988,8 @@ local function finishUpdate(entry, tempPath)
 end
 
 local function downloadUpdate(entry)
-    -- Called from inside the manifest downloadUrlToFile's own callback - calling
-    -- downloadUrlToFile again immediately (same tick) throws "device or resource busy",
-    -- the native downloader hasn't released its handle yet. A tick of delay in its own
-    -- thread fixes it - the same workaround Fire Helper uses before its own download call.
+    -- Called from inside the manifest downloadUrlToFile's own callback - calling downloadUrlToFile again immediately (same tick) throws "device or resource busy",
+    -- the native downloader hasn't released its handle yet. A tick of delay in its own thread fixes it - the same workaround Fire Helper uses before its own download call.
     lua_thread.create(function()
         wait(250)
         local tempPath = thisScript().path .. '.tmp'
@@ -811,8 +1012,8 @@ local function downloadUpdate(entry)
     end)
 end
 
--- Fetches manifest.json and hands the entry for UPDATE_SCRIPT_ID to onEntry(entry). onError(why)
--- covers everything else (fetch failure, timeout, bad JSON, missing entry) - exactly one fires.
+-- Fetches manifest.json and hands the entry for UPDATE_SCRIPT_ID to onEntry(entry).
+-- onError(why) covers everything else (fetch failure, timeout, bad JSON, missing entry) - exactly one fires.
 local function fetchManifestEntry(onEntry, onError)
     local manifestPath = thisScript().path .. '.manifest.tmp'
     removeIfExists(manifestPath)
@@ -854,6 +1055,9 @@ local function checkForUpdate()
     updateStatus('Проверяю обновления...')
     fetchManifestEntry(
         function(entry)
+            -- Strictly "remote > local", not "remote ~= local" - downgrade is intentionally unsupported here (a manifest rollback would otherwise fight a newer local dev
+            -- build). Picking an older release on purpose is a separate, not-yet-built path: explicit version argument, fetched from that version's GitHub Release asset
+            -- (github.com/TheMY3/arzhub-scripts/releases/download/inventory-plus-vX.Y.Z/...), not from entry.path (which always serves the latest).
             local remote, current = versionNum(entry.version), versionNum(thisScript().version)
             if not remote or not current or remote <= current then
                 updateStatus('У вас последняя версия (v' .. thisScript().version .. ').')
@@ -868,9 +1072,8 @@ local function checkForUpdate()
     )
 end
 
--- Passive check fired once at load: silent when there's nothing to report (up to date, manifest
--- unreachable, whatever) - one line when an update actually exists. Never downloads anything
--- itself, just points at /ipupdate.
+-- Passive check fired once at load: silent when there's nothing to report (up to date, manifest unreachable, whatever) - one line when an update actually exists. Never downloads
+-- anything itself, just points at the update command.
 local function checkForUpdateSilently()
     fetchManifestEntry(
         function(entry)
@@ -897,6 +1100,8 @@ function main()
         sampAddChatMessage(tag .. cp('Запущено обновление списка предметов... Результат можно узнать, открыв любое окно с предметами.'), -1)
     end)
 
+    -- Intentionally not advertised in the boot message below - hidden command.
+    sampRegisterChatCommand('ipexport', doExport)
     sampRegisterChatCommand('ipupdate', function()
         checkForUpdate()
     end)
