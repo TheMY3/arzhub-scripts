@@ -23,6 +23,25 @@
           ]
         }
       ]
+    },
+    {
+      "id": "crypto-collector",
+      "name": "Crypto Collector",
+      "filename": "[TheMY3] Crypto Collector.lua",
+      "legacy_filenames": [],
+      "version": "2.5.0",
+      "path": "scripts/crypto-collector.lua",
+      "topic": "https://www.blast.hk/threads/243868/",
+      "actual": true,
+      "changelog": [
+        {
+          "version": "2.5.0",
+          "notes": [
+            "Вернулся игнор-лист домов: на вкладке «Настройки» можно добавить номер дома кнопкой, такие дома пропускаются при обходе, даже если в них есть доступ к картам.",
+            "Команды переименованы под общий префикс: /cstats -> /crstats, /cconfig -> /crconfig, /chelp -> /crhelp. Старые названия продолжают работать."
+          ]
+        }
+      ]
     }
   ]
 }
