@@ -1485,8 +1485,9 @@ local function versionNum(v)
 	return tonumber(a) * 1000000 + tonumber(b) * 1000 + tonumber(c)
 end
 
+-- os.remove is called unguarded on purpose: with doesFileExist in front leftovers survived the cleanup on a real client, and removing a file that is not there is a harmless no-op.
 local function removeIfExists(path)
-	if doesFileExist(path) then os.remove(path) end
+	return os.remove(path)
 end
 
 -- Guards an async downloadUrlToFile callback with a timeout: whichever of {the real callback, the timeout} fires first wins and calls its own logic; the loser is a silent no-op.
@@ -1658,8 +1659,8 @@ function main()
 	wait(1000)
 
 	-- Remnants of an interrupted update (game closed mid-download etc.) - clean before anything else.
+	-- .old is deliberately not touched: it is the previous build, the only way back from an update that turned out broken. One generation at most - atomicReplace overwrites it every time. MoonLoader will not pick it up, the extension is not .lua.
 	removeIfExists(thisScript().path .. '.tmp')
-	removeIfExists(thisScript().path .. '.old')
 	removeIfExists(thisScript().path .. '.manifest.tmp')
 
 	if hasWindow then
