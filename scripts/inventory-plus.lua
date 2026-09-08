@@ -1,6 +1,6 @@
 script_name('[TM] Inventory Plus')
 script_author('TheMY3')
-script_version('2.3.2')
+script_version('2.4.1')
 
 -- Тема на форуме (актуальная версия, обсуждение): https://www.blast.hk/threads/255785/
 
@@ -17,7 +17,8 @@ local tag = '{FFA500}[TM] Inventory Plus{FFFFFF}: '
 -- Если с 'all' словарь грузится слишком долго или не грузится вовсе (в поиске висит «ЗАГРУЗКА...» или «СПИСОК НЕ ЗАГРУЖЕН») — поменяйте на 'market' (менять только слово в кавычках) и перезапустите игру.
 local DICT_MODE = 'all'
 
-local BOOTSTRAP_JS = ([[
+-- Lavka + wardrobe/warehouse/trunk: search, sort, name dictionary, MAX button in buy/sell dialogs.
+local WAREHOUSE_JS = ([[
 (() => {
     const VERSION = '__VERSION__';
     //region CONFIG & TEARDOWN — selectors, prior/legacy instance cleanup, shared state
@@ -655,6 +656,209 @@ local BOOTSTRAP_JS = ([[
 })();
 ]]):gsub('__VERSION__', thisScript().version):gsub('__DICT_MODE__', DICT_MODE)
 
+-- The player's own "Инвентарь" window: separate script, separate evalcef() call (own 32767-byte budget) —
+-- own class names (.inventory-main__grid, not .warehouse__grid), no ПКМ menu in lavka/wardrobe/warehouse at
+-- all, so pin only makes sense here.
+local INVENTORY_JS = ([[
+(() => {
+    const VERSION = '__VERSION__';
+    const GRID_SEL = '.inventory-main__grid > .inventory-grid';
+    const PIN_KEY = 'tm-invplus-pin-v1';
+    const PIN_BTN_CLASS = 'tm-pin-btn';
+    const PIN_TEXT = '\u0417\u0430\u043a\u0440\u0435\u043f\u0438\u0442\u044c'; // Закрепить
+    const UNPIN_TEXT = '\u041e\u0442\u043a\u0440\u0435\u043f\u0438\u0442\u044c'; // Открепить
+
+    const prev = window.__tmInvPin;
+    if (prev) {
+        if (prev.version === VERSION) { prev.kick(); return; }
+        try { clearInterval(prev.iv); } catch (e) {}
+        try { if (prev.obs) prev.obs.disconnect(); } catch (e) {}
+        window.__tmInvPin = null;
+    }
+
+    // Pin is by item TYPE id, not per-stack instance - the server never exposes an instance id for ordinary
+    // items (docs/inventory.md's unic_id note), so pinning one stack pins every stack of that type.
+    let pinned = new Set();
+    try { pinned = new Set(JSON.parse(localStorage.getItem(PIN_KEY) || '[]')); } catch (e) {}
+    const savePinned = () => { try { localStorage.setItem(PIN_KEY, JSON.stringify(Array.from(pinned))); } catch (e) {} };
+
+    const getGrid = () => document.querySelector(GRID_SEL);
+    const cellId = (hoc) => {
+        const img = hoc.querySelector('img.inventory-item__image');
+        const a = img && (img.getAttribute('alt') || '').match(/(\d+)/);
+        return a ? a[1] : null;
+    };
+
+    const applyPinSort = () => {
+        const grid = getGrid();
+        const gridGrid = grid && grid.querySelector('.inventory-grid__grid');
+        if (!gridGrid) return;
+        const cells = Array.from(gridGrid.querySelectorAll('.inventory-item-hoc'));
+        if (!cells.length) return;
+
+        if (pinned.size) {
+            // Garbage-collect ids for items no longer anywhere in this grid (consumed/traded away).
+            const present = new Set();
+            cells.forEach((c) => { const id = cellId(c); if (id) present.add(id); });
+            let changed = false;
+            pinned.forEach((id) => { if (!present.has(id)) { pinned.delete(id); changed = true; } });
+            if (changed) savePinned();
+        }
+
+        const isPinned = (c) => { const id = cellId(c); return !!(id && pinned.has(id)); };
+
+        // Badge position is mirrored off the native top-right .inventory-item__activity-icon (its computed
+        // right becomes our left), so it lines up at any resolution - the game sizes everything with a fluid
+        // vw formula, fixed px would drift. One probe per pass: getComputedStyle per cell froze the UI before.
+        let probe = null;
+        const badgeStyle = (item) => {
+            if (probe !== null) return probe;
+            probe = false;
+            const native = item.querySelector('.inventory-item__activity-icon');
+            if (!native) return probe;
+            try {
+                const cs = getComputedStyle(native);
+                if (cs.right && cs.right !== 'auto' && cs.top && cs.top !== 'auto') {
+                    probe = { top: cs.top, left: cs.right, fontSize: cs.fontSize };
+                }
+            } catch (e) {}
+            return probe;
+        };
+
+        // pointer-events:none like the warehouse name banner, so it never intercepts a native click.
+        cells.forEach((c) => {
+            const item = c.querySelector('.inventory-item');
+            let ic = c.querySelector('.tm-pin-icon');
+            if (!item) return;
+            if (isPinned(c)) {
+                if (!ic) {
+                    if (!item.style.position) item.style.position = 'relative';
+                    ic = document.createElement('i');
+                    ic.className = 'tm-pin-icon icon-pin';
+                    const s = ic.style;
+                    const p = badgeStyle(item);
+                    s.position = 'absolute';
+                    s.top = p ? p.top : '6%';
+                    s.left = p ? p.left : '6%';
+                    if (p) s.fontSize = p.fontSize;
+                    s.color = '#fff';
+                    s.textShadow = '0 0 2px rgba(0,0,0,0.8)';
+                    s.pointerEvents = 'none';
+                    s.zIndex = '5';
+                    item.appendChild(ic);
+                }
+            } else if (ic) {
+                ic.remove();
+            }
+        });
+
+        // Order only, never move nodes: the grid is a display:grid, and reordering its children behind svelte's
+        // back is what broke 2.4.0 - see "Не переставлять узлы игрового DOM" in docs/cef.md.
+        cells.forEach((c) => {
+            if (isPinned(c)) c.style.order = '-1';
+            else if (c.style.order) c.style.removeProperty('order');
+        });
+    };
+
+    // One-shot cleanup after 2.4.0: a page it already permuted stays that way until the game restarts, and
+    // nothing above touches the order any more. Fires only when the grid really is inverted.
+    let orderRepaired = false;
+    const repairLegacyOrder = () => {
+        if (orderRepaired) return;
+        const grid = getGrid();
+        const gridGrid = grid && grid.querySelector('.inventory-grid__grid');
+        if (!gridGrid) return;
+        const kids = Array.from(gridGrid.children);
+        const isLock = (el) => el.classList.contains('inventory-grid__item-bg');
+        const isItem = (el) => el.classList.contains('inventory-item-hoc');
+        const firstLock = kids.findIndex(isLock);
+        let lastItem = -1;
+        kids.forEach((el, i) => { if (isItem(el)) lastItem = i; });
+        if (firstLock === -1 || lastItem === -1) return;   // nothing to compare yet
+        orderRepaired = true;
+        if (firstLock > lastItem) return;                  // already the way the game wants it
+        kids.forEach((el) => { if (isLock(el)) gridGrid.appendChild(el); });
+        gridGrid.querySelectorAll('[data-tm-pin-idx]').forEach((el) => { delete el.dataset.tmPinIdx; });
+    };
+
+    // The menu wrapper (.inventory-item-context-menu-wrapper) lands as a sibling of the right-clicked cell
+    // inside the same .inventory-grid__grid, and that cell gets .inventory-item--active - found via a live
+    // /debug_dom with the menu open (2026-08-31).
+    const enhanceContextMenu = () => {
+        const grid = getGrid();
+        const gridGrid = grid && grid.querySelector('.inventory-grid__grid');
+        const buttons = gridGrid && gridGrid.querySelector('.inventory-info__buttons');
+        if (!buttons) return;
+
+        // Don't duplicate a future official pin entry, if Arizona ever ships one.
+        const already = Array.from(buttons.children).some((el) => {
+            if (el.classList.contains(PIN_BTN_CLASS)) return false;
+            const t = (el.textContent || '').trim();
+            return t === PIN_TEXT || t === UNPIN_TEXT;
+        });
+        if (already) return;
+
+        const active = gridGrid.querySelector('.inventory-item--active');
+        const hoc = active && active.closest('.inventory-item-hoc');
+        const id = hoc && cellId(hoc);
+        if (!id) return; // can't resolve the target item - don't inject a button that would do nothing
+
+        let btn = buttons.querySelector('.' + PIN_BTN_CLASS);
+        if (!btn) {
+            btn = document.createElement('div');
+            btn.className = 'inventory-info__button ' + PIN_BTN_CLASS;
+            const inner = document.createElement('div');
+            inner.className = 'inventory-button inventory-button--default inventory-button--context';
+            const icon = document.createElement('i');
+            icon.className = 'inventory-button__icon icon-pin inventory-button__icon--small';
+            const text = document.createElement('div');
+            text.className = 'inventory-button__text inventory-button__text--absolute tm-pin-text';
+            inner.appendChild(icon);
+            inner.appendChild(text);
+            btn.appendChild(inner);
+            btn.addEventListener('click', () => {
+                const curId = btn.dataset.tmItemId;
+                if (!curId) return;
+                if (pinned.has(curId)) pinned.delete(curId); else pinned.add(curId);
+                savePinned();
+                applyPinSort();
+                // Native buttons close the menu themselves; ours doesn't hook into that, so trigger the
+                // native "Закрыть" button (still the last child - we insert before it) instead of reimplementing it.
+                const closeBtn = buttons.lastElementChild;
+                const closeInner = closeBtn && closeBtn.querySelector('.inventory-button');
+                (closeInner || closeBtn).click();
+            });
+            buttons.insertBefore(btn, buttons.lastElementChild); // keep the native "Закрыть" last
+        }
+        btn.dataset.tmItemId = id;
+        const textEl = btn.querySelector('.tm-pin-text');
+        const label = pinned.has(id) ? UNPIN_TEXT : PIN_TEXT;
+        if (textEl.textContent !== label) textEl.textContent = label;
+    };
+
+    let obs = null;
+    const kick = () => {
+        const cur = window.__tmInvPin;
+        if (!cur || cur.version !== VERSION) return;
+        if (obs) obs.disconnect();
+        try { try { repairLegacyOrder(); } catch (e) {} try { applyPinSort(); } catch (e) {} try { enhanceContextMenu(); } catch (e) {} }
+        finally { if (obs) obs.observe(document.body, { childList: true, subtree: true }); }
+    };
+
+    let kickPending = false;
+    const scheduleKick = () => {
+        if (kickPending) return;
+        kickPending = true;
+        setTimeout(() => { kickPending = false; kick(); }, 50);
+    };
+
+    obs = new MutationObserver(scheduleKick);
+    const iv = setInterval(kick, 1500);
+    window.__tmInvPin = { version: VERSION, kick, obs, iv };
+    kick();
+})();
+]]):gsub('__VERSION__', thisScript().version)
+
 local function evalcef(code, encoded)
     -- Code length is written as Int16 -> hard cap of 32767 bytes.
     if type(code) ~= 'string' or code == '' or #code > 32767 then return false end
@@ -671,12 +875,22 @@ local function evalcef(code, encoded)
 end
 
 local function inject()
-    evalcef(BOOTSTRAP_JS)
+    evalcef(WAREHOUSE_JS)
+    evalcef(INVENTORY_JS)
 end
 
 -- The dictionary lives in JS; this forces a re-fetch past every cache.
 local function reloadNames()
     evalcef("(()=>{if(window.__tmInvPlus&&window.__tmInvPlus.reloadNames)window.__tmInvPlus.reloadNames();})()")
+end
+
+-- Shared by both regions below (dict cache reading and update-manifest reading).
+local function readFile(path)
+    local f = io.open(path, 'rb')
+    if not f then return nil end
+    local content = f:read('*a')
+    f:close()
+    return content
 end
 
 --region PACKET CAPTURE - hidden /ipexport: buffer container snapshots straight off the wire (220/17).
@@ -759,14 +973,6 @@ local EXPORT_DIR = getWorkingDirectory() .. '\\dumps\\inventory-plus'
 
 local namesCache = nil -- nil until resolved once; then kept for the rest of the session
 local namesFetching = false
-
-local function readFile(path)
-    local f = io.open(path, 'rb')
-    if not f then return nil end
-    local content = f:read('*a')
-    f:close()
-    return content
-end
 
 local function loadNamesFromDisk()
     local content = readFile(DICT_CACHE_PATH)
@@ -912,8 +1118,7 @@ local function versionNum(v)
     return tonumber(a) * 1000000 + tonumber(b) * 1000 + tonumber(c)
 end
 
--- Unguarded on purpose: with doesFileExist in front, leftovers (.old, .manifest.tmp) were seen surviving
--- the cleanup, and removing a file that is not there is a harmless no-op anyway.
+-- os.remove is called unguarded on purpose: with doesFileExist in front leftovers survived the cleanup on a real client, and removing a file that is not there is a harmless no-op.
 local function removeIfExists(path)
     return os.remove(path)
 end
