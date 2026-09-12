@@ -1,6 +1,6 @@
 script_name('[TM] Inventory Plus')
 script_author('TheMY3')
-script_version('2.4.1')
+script_version('2.5.0')
 
 -- Тема на форуме (актуальная версия, обсуждение): https://www.blast.hk/threads/255785/
 
@@ -21,20 +21,14 @@ local DICT_MODE = 'all'
 local WAREHOUSE_JS = ([[
 (() => {
     const VERSION = '__VERSION__';
-    //region CONFIG & TEARDOWN — selectors, prior/legacy instance cleanup, shared state
-    // Same .inventory-grid component everywhere; only the wrapper differs:
-    // lavka is .shop__grid-wrapper, wardrobe/warehouse/trunk share one .warehouse__grid (DOM dumps confirm).
+    //region CONFIG & TEARDOWN - selectors, prior/legacy instance cleanup, shared state
     const GRID_SEL = '.shop__grid-wrapper > .inventory-grid, .warehouse__grid > .inventory-grid';
     const INPUT_ID = 'tm-invplus-search';
-    // Substituted from the Lua-side DICT_MODE ('all' | 'market').
-    // CACHE_KEY follows the mode so a hand-edit can't serve the old slice from cache (stale ETag would 304 forever).
     const DICT_MODE = '__DICT_MODE__';
     const ITEMS_URL = 'https://arzhub.top/api/public/marketplace/items/' + DICT_MODE;
     const CACHE_KEY = 'tm-invplus-names-' + DICT_MODE;
     const SORT_KEY = 'tm-invplus-sort-v1';
 
-    // One-time teardown of the pre-rename (Lavka Enhancer) instance: the CEF page outlives Lua script reloads,
-    // so its interval/observer/input and localStorage keys may still be alive under the old names.
     const legacy = window.__tmLavkaSearch;
     if (legacy) {
         try { clearInterval(legacy.iv); } catch (e) {}
@@ -66,29 +60,30 @@ local WAREHOUSE_JS = ([[
         window.__tmInvPlus = null;
     }
 
-    const state = { q: '', locked: false, sorted: false };
+    const state = { q: '', locked: false, sorted: false, takeAllRunning: false };
     try { state.sorted = localStorage.getItem(SORT_KEY) === '1'; } catch (e) {} // the sort toggle persists across sessions
     let lastGrid = null;
+
     //endregion
 
-    //region CONST & UTILS — selectors, UI strings, sizing helpers
+    //region CONST & UTILS - selectors, UI strings, sizing helpers
     const getGrid = () => document.querySelector(GRID_SEL);
 
     const itemId = (img) => {
         if (!img) return null;
         const a = (img.getAttribute('alt') || '').match(/(\d+)/);
         if (a) return a[1];
-        // src fallback: lavka serves donate/<id>.webp, warehouse windows serve items.zip/<id>.webp.
         const s = (img.getAttribute('src') || '').match(/(?:donate\/(?:\d+\/)?|items\.zip\/)(\d+)\.webp/);
         return s ? s[1] : null;
     };
 
-    // Native empty slot (from a DOM dump): .inventory-item with a radial --bg and only .inventory-item__hover-overlay inside. Cloned for pad cells.
     const EMPTY_BG = 'radial-gradient(circle, rgba(255, 255, 255, 0.1) 2%, #131516 66%)';
     const PAD_CLASS = 'tm-pad-cell';
     const PLATE_ID = 'tm-empty-msg';
     const NOT_FOUND_TEXT = '\u041D\u0438\u0447\u0435\u0433\u043E \u043D\u0435 \u043D\u0430\u0439\u0434\u0435\u043D\u043E'; // Ничего не найдено
-    const RESET_TEXT = '\u0421\u0431\u0440\u043E\u0441\u0438\u0442\u044C \u043F\u043E\u0438\u0441\u043A'; // Сбросить поиск
+    const TAKE_ALL_TEXT = '\u0417\u0430\u0431\u0440\u0430\u0442\u044C \u0432\u0441\u0451'; // Забрать всё
+    const TAKE_TEXT = '\u0417\u0430\u0431\u0440\u0430\u0442\u044C'; // Забрать
+    const STOP_TEXT = '\u041E\u0441\u0442\u0430\u043D\u043E\u0432\u0438\u0442\u044C'; // Остановить
     const PH_SEARCH = '\u041F\u041E\u0418\u0421\u041A'; // ПОИСК
     const PH_LOADING = '\u0417\u0410\u0413\u0420\u0423\u0417\u041A\u0410...'; // ЗАГРУЗКА...
     const PH_FAILED = '\u0421\u041F\u0418\u0421\u041E\u041A \u041D\u0415 \u0417\u0410\u0413\u0420\u0423\u0416\u0415\u041D'; // СПИСОК НЕ ЗАГРУЖЕН
@@ -97,7 +92,6 @@ local WAREHOUSE_JS = ([[
     const SORT_HINT = '\u0421\u043E\u0440\u0442\u0438\u0440\u043E\u0432\u0430\u0442\u044C \u043F\u043E \u043D\u0430\u0437\u0432\u0430\u043D\u0438\u044E'; // Сортировать по названию
     const SORT_HINT_ON = '\u041E\u0442\u043A\u043B\u044E\u0447\u0438\u0442\u044C \u0441\u043E\u0440\u0442\u0438\u0440\u043E\u0432\u043A\u0443'; // Отключить сортировку
 
-    // Buy/sell dialog string constants (logic lives in the BUY/SELL DIALOG region below)
     const DLG_COST_ID = 'tm-dlg-cost';
     const T_TRIGGER = '\u043a\u0430\u043a\u043e\u0435 \u043a\u043e\u043b\u0438\u0447\u0435\u0441\u0442\u0432\u043e'; // какое количество
     const T_PLAYER_BUYS = '\u0418\u0433\u0440\u043e\u043a \u043f\u043e\u043a\u0443\u043f\u0430\u0435\u0442'; // Игрок покупает
@@ -110,11 +104,9 @@ local WAREHOUSE_JS = ([[
     const ICON_ID = 'tm-invplus-search-ico';
     const LOCK_ID = 'tm-invplus-search-lock';
     const SORT_ID = 'tm-invplus-search-sort';
-    // Native icon classes (from DOM dumps): magnifier when idle, close cross while typing — same swap the stock inventory search does.
     const ICON_SEARCH = 'inventory-search__search-icon ui-azpotify-magnifier ';
     const ICON_CLEAR = 'inventory-search__search-close ui-close';
 
-    // The game's fluid size formula (copied verbatim from their CSS): n design px at 1920w shrinking to 0.44*n at 800w, scaled by --global-scale.
     const gs = (n) => {
         const t = 'var(--global-scale)*' + n + '*var(--global-scale)';
         const d = '(var(--global-scale)*1920 - var(--global-scale)*800)';
@@ -127,10 +119,7 @@ local WAREHOUSE_JS = ([[
         return parseInt(raw, 10) || 5;
     };
 
-    //endregion
 
-    //region GRID UI — pad cells, reset plate, name banners, sort, filter, search input
-    // Synthetic empty cell that looks like a native empty slot.
     const makePadCell = () => {
         const hoc = document.createElement('div');
         hoc.className = 'inventory-item-hoc ' + PAD_CLASS;
@@ -144,14 +133,19 @@ local WAREHOUSE_JS = ([[
         return hoc;
     };
 
-    const clearSynthetic = (gridGrid) => {
+    const clearSynthetic = (gridGrid, keepPlate) => {
         gridGrid.querySelectorAll('.' + PAD_CLASS).forEach((el) => el.remove());
+        if (keepPlate) return;
         const msg = document.getElementById(PLATE_ID); // the plate lives outside the grid
         if (msg) msg.remove();
     };
 
-    // Full-width button plate below the grid (width:100% container outside the grid + a native .inventory-button inside). Click resets the search.
-    const addPlate = (grid, label) => {
+    const isWarehouse = (grid) => {
+        const w = grid.parentElement;
+        return !!(w && w.classList.contains('warehouse__grid'));
+    };
+
+    const addPlate = (grid, label, onClick) => {
         const wrapper = grid.parentElement;                       // .shop__grid-wrapper | .warehouse__grid
         const host = (wrapper && wrapper.parentElement) || grid;  // .shop__grid | .warehouse
 
@@ -172,16 +166,14 @@ local WAREHOUSE_JS = ([[
         text.className = 'inventory-button__text';
         text.textContent = label;
 
-        btn.addEventListener('click', () => resetSearch());
+        btn.addEventListener('click', onClick);
 
         btn.appendChild(text);
         shopBtn.appendChild(btn);
         msg.appendChild(shopBtn);
-        // Right after the grid wrapper, not at the host's end: .warehouse keeps its money block (Пополнить/Снять) below the grid.
         host.insertBefore(msg, wrapper ? wrapper.nextSibling : null);
     };
 
-    // Name banner on top of a cell (single line, ellipsis).
     const NAME_CLASS = 'tm-item-name';
     const labelItem = (hoc, names) => {
         const item = hoc.querySelector('.inventory-item');
@@ -192,13 +184,11 @@ local WAREHOUSE_JS = ([[
         let el = item.querySelector('.' + NAME_CLASS);
         if (!nm) { if (el) el.remove(); return; }   // no name/dictionary — no banner
         if (!el) {
-            // The banner is positioned off the cell — needs a relative context. Cheap inline-style check: getComputedStyle here caused a freeze.
             if (!item.style.position) item.style.position = 'relative';
             el = document.createElement('div');
             el.className = NAME_CLASS;
             const s = el.style;
             s.position = 'absolute';
-            // -1 overlaps the cell's 1px border (absolute offsets start inside it, leaving a bright hairline otherwise).
             s.top = gs(-1); s.left = gs(-1); s.right = gs(-1);
             s.padding = gs(1) + ' ' + gs(4);
             s.fontSize = gs(10);
@@ -216,7 +206,6 @@ local WAREHOUSE_JS = ([[
         if (el.textContent !== nm) el.textContent = nm;
     };
 
-    // Sorting helpers: cells are ordered by dictionary name; unnamed items and empty slots go last.
     const cellName = (hoc, names) => {
         if (!names) return null;
         const img = hoc.querySelector('img.inventory-item__image');
@@ -240,41 +229,59 @@ local WAREHOUSE_JS = ([[
             }
             return orig(a) - orig(b);
         });
-        // Move nodes only when the order actually differs — pointless appendChild churn would retrigger the observer every kick.
         for (let i = 0; i < target.length; i++) {
             if (target[i] !== cells[i]) { target.forEach((c) => gridGrid.appendChild(c)); return; }
         }
     };
 
-    // Show only the matches (they collect at the top, always visible) and pad the last row with synthetic empty cells.
-    // A reset plate goes below: "Сбросить поиск" with results, "Ничего не найдено" without (the latter also keeps the window from collapsing).
     const applyFilter = () => {
         const grid = getGrid();
         if (!grid) return;
         const gridGrid = grid.querySelector('.inventory-grid__grid');
         if (!gridGrid) return;
         const q = state.q.trim();
+        const warehouse = isWarehouse(grid);
 
-        clearSynthetic(gridGrid);
+        // Skip tearing down/rebuilding an already-running take-all plate on every grid mutation - each
+        // successful take mutates the grid and would otherwise replace the button out from under a click.
+        // Checked by label, not just presence, so the initial switch to STOP_TEXT still happens.
+        const existingPlate = document.getElementById(PLATE_ID);
+        const existingPlateText = existingPlate && existingPlate.querySelector('.inventory-button__text');
+        const plateAlreadyRunning = state.takeAllRunning && !!existingPlateText && existingPlateText.textContent === STOP_TEXT;
+        clearSynthetic(gridGrid, plateAlreadyRunning);
         const names = window.__invPlusNames;   // may not be loaded yet
         applySort(gridGrid, names);
         const realCells = gridGrid.querySelectorAll('.inventory-item-hoc:not(.' + PAD_CLASS + ')');
 
         realCells.forEach((hoc) => labelItem(hoc, names));   // name banners — always
 
+        // Item ids of the given cells - sent straight to Lua instead of query text, so it never has to redo the
+        // matching itself (Lua's string.lower() is ASCII-only, doesn't fold Cyrillic case the way JS's does).
+        const idsOf = (cells) => {
+            const ids = [];
+            cells.forEach((hoc) => {
+                const img = hoc.querySelector('img.inventory-item__image');
+                const id = img && itemId(img);
+                if (id) ids.push(id);
+            });
+            return ids;
+        };
+
         if (!q) {
             realCells.forEach((hoc) => { hoc.style.display = ''; });
+            if (warehouse && !plateAlreadyRunning) addPlate(grid, state.takeAllRunning ? STOP_TEXT : TAKE_ALL_TEXT, () => onTakeAllClick(idsOf(realCells)));
             return;
         }
 
-        // '%' separates several searches at once (OR): each part is trimmed, empty parts dropped.
         const parts = q.toLowerCase().split('%').map((p) => p.trim()).filter(Boolean);
         if (!parts.length) {
             realCells.forEach((hoc) => { hoc.style.display = ''; });
+            if (warehouse && !plateAlreadyRunning) addPlate(grid, state.takeAllRunning ? STOP_TEXT : TAKE_ALL_TEXT, () => onTakeAllClick(idsOf(realCells)));
             return;
         }
 
         let matches = 0;
+        const matchedCells = [];
         realCells.forEach((hoc) => {
             const img = hoc.querySelector('img.inventory-item__image');
             if (!img) { hoc.style.display = 'none'; return; }   // empty slot — hide while searching
@@ -283,22 +290,26 @@ local WAREHOUSE_JS = ([[
             const nml = nm && nm.toLowerCase();
             const ok = nml && parts.some((p) => nml.includes(p));
             hoc.style.display = ok ? '' : 'none';
-            if (ok) matches++;
+            if (ok) { matches++; matchedCells.push(hoc); }
         });
 
         const cols = getCols(grid);
         if (matches === 0) {
-            // One row of empty cells so the grid keeps its normal width.
             for (let i = 0; i < cols; i++) gridGrid.appendChild(makePadCell());
-            addPlate(grid, NOT_FOUND_TEXT);
+            // Zero matches mid-run just means we cleared the filtered list, not that nothing exists - keep
+            // showing the stop plate instead of "not found" (and don't touch it if already showing it).
+            if (state.takeAllRunning) {
+                if (warehouse && !plateAlreadyRunning) addPlate(grid, STOP_TEXT, () => onTakeAllClick([]));
+            } else {
+                addPlate(grid, NOT_FOUND_TEXT, () => resetSearch());
+            }
         } else {
             const pad = (cols - (matches % cols)) % cols;
             for (let i = 0; i < pad; i++) gridGrid.appendChild(makePadCell());
-            addPlate(grid, RESET_TEXT);
+            if (warehouse && !plateAlreadyRunning) addPlate(grid, state.takeAllRunning ? STOP_TEXT : TAKE_TEXT, () => onTakeAllClick(idsOf(matchedCells)));
         }
     };
 
-    // Reset the query and the visible input; used by the cross icon and the plate button.
     const resetSearch = () => {
         state.q = '';
         const inp = document.getElementById(INPUT_ID);
@@ -308,7 +319,14 @@ local WAREHOUSE_JS = ([[
         applyFilter();
     };
 
-    // Native item-style tooltip (global classes: dark plate + name; the stock arrow is too bulky at this size), to mount under a positioned icon.
+    const onTakeAllClick = (ids) => {
+        if (state.takeAllRunning) {
+            window.cef.SendMessage('tmInvPlusTakeAllStop', 0);
+        } else {
+            window.cef.SendMessage('tmInvPlusTakeAll|' + ids.join(','), 0);
+        }
+    };
+
     const makeTip = (label) => {
         const tip = document.createElement('div');
         tip.className = 'inventory-item__tooltip';
@@ -326,7 +344,6 @@ local WAREHOUSE_JS = ([[
         return tip;
     };
 
-    // Magnifier while idle, clickable cross while a query is set — same swap the stock inventory search does.
     const syncIcon = () => {
         const ico = document.getElementById(ICON_ID);
         if (!ico) return;
@@ -335,8 +352,6 @@ local WAREHOUSE_JS = ([[
         ico.style.cursor = state.q ? 'pointer' : '';
     };
 
-    // The lock only makes sense together with a query: hidden (and force-unlocked) while the input is empty.
-    // Checks :hover itself — the periodic kick() also lands here and must not strip the hover highlight.
     const syncLock = () => {
         const lk = document.getElementById(LOCK_ID);
         if (!lk) return;
@@ -345,13 +360,11 @@ local WAREHOUSE_JS = ([[
         let hovered = false;
         try { hovered = lk.matches(':hover'); } catch (e) {}
         lk.style.opacity = (state.locked || hovered) ? '1' : '0.35';
-        // The hint describes the click action, so it flips with the state.
         const nm = lk.querySelector('.inventory-item__tooltip-name');
         const hint = state.locked ? LOCK_HINT_ON : LOCK_HINT;
         if (nm && nm.textContent !== hint) nm.textContent = hint;
     };
 
-    // Sort toggle: dim when off, bright when on or hovered; the hint flips with the state.
     const syncSort = () => {
         const el = document.getElementById(SORT_ID);
         if (!el) return;
@@ -363,7 +376,6 @@ local WAREHOUSE_JS = ([[
         if (nm && nm.textContent !== hint) nm.textContent = hint;
     };
 
-    // The input is always mounted with the grid window; the dictionary state drives it: enabled ("ПОИСК") / disabled while loading / disabled with a "СПИСОК НЕ ЗАГРУЖЕН" hint on fetch failure.
     const ensureInput = () => {
         const grid = getGrid();
         if (!grid) return;
@@ -388,7 +400,6 @@ local WAREHOUSE_JS = ([[
             icon.className = ICON_SEARCH;
             icon.addEventListener('click', () => { if (state.q) resetSearch(); });
 
-            // Session-only "remember the query" toggle; icon-lock glyph comes from the game's icon font.
             const lock = document.createElement('i');
             lock.id = LOCK_ID;
             lock.className = 'icon-lock';
@@ -406,7 +417,6 @@ local WAREHOUSE_JS = ([[
             const tip = makeTip(LOCK_HINT);
             lock.appendChild(tip);
 
-            // Hover highlight like the stock cross icon + the tooltip.
             lock.addEventListener('mouseenter', () => {
                 lock.style.opacity = '1';
                 tip.style.display = '';
@@ -416,7 +426,6 @@ local WAREHOUSE_JS = ([[
                 syncLock(); // restore the opacity that matches the locked state
             });
 
-            // Sort-by-name toggle at the left edge of the search row.
             const sort = document.createElement('i');
             sort.id = SORT_ID;
             sort.className = 'icon-refresh-arrows';
@@ -464,7 +473,6 @@ local WAREHOUSE_JS = ([[
             : (window.__invPlusNamesFailed ? PH_FAILED : PH_LOADING);
         if (input.placeholder !== ph) input.placeholder = ph;
         if (input.disabled === !!names) input.disabled = !names;
-        // While the dictionary is missing the search cannot work; drop leftover text unless the lock preserves it.
         if (!names && input.value && !state.locked) { input.value = ''; state.q = ''; }
 
         syncIcon();
@@ -474,8 +482,7 @@ local WAREHOUSE_JS = ([[
 
     //endregion
 
-    //region BUY/SELL DIALOG — MAX button + live total
-    // Parse an integer that follows a label; the server prints thousands with dots (e.g. "36.000").
+    //region BUY/SELL DIALOG - MAX button + live total
     const numAfter = (text, label) => {
         const i = text.indexOf(label);
         if (i === -1) return null;
@@ -485,9 +492,7 @@ local WAREHOUSE_JS = ([[
         return isFinite(n) ? n : null;
     };
     const fmtNum = (n) => String(n).replace(/\B(?=(\d{3})+(?!\d))/g, '.'); // dot thousands, matching the game's format
-    // Set textContent only when it actually changes, so our own writes never trip the MutationObserver into a loop.
     const setText = (el, v) => { if (el.textContent !== v) el.textContent = v; };
-    // Native value setter + input/change events, so Svelte's bound state updates (a plain input.value = x is ignored by the framework).
     const setFieldValue = (input, val) => {
         try {
             const d = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value');
@@ -498,7 +503,6 @@ local WAREHOUSE_JS = ([[
         input.focus();
     };
 
-    // Buy/sell quantity dialog: repurpose the layout indicator (idle while typing digits) as a MAX button, and show a live total under the field.
     const enhanceDialog = () => {
         const dlg = document.querySelector('.dialog');
         if (!dlg) return;
@@ -508,7 +512,6 @@ local WAREHOUSE_JS = ([[
         const text = desc.textContent || '';
         if (text.indexOf(T_TRIGGER) === -1) return;
 
-        // Sell is capped by both the buyer's demand and your stock; buy is capped by the shop's stock.
         let max = null;
         if (text.indexOf(T_PLAYER_BUYS) !== -1) {
             const cands = [numAfter(text, T_PLAYER_BUYS), numAfter(text, T_YOU_HAVE)].filter((v) => v != null);
@@ -529,7 +532,6 @@ local WAREHOUSE_JS = ([[
             lang.onclick = () => setFieldValue(input, String(max)); // property assignment is idempotent across re-runs
         }
 
-        // Currency icon is a glyph from the game's "client-icons" font, already present in the "Стоимость" line (cash/vcash differ per dialog) — reuse it verbatim so the total matches.
         let glyph = '', glyphFont = '';
         const gEl = desc.querySelector('span[style*="client-icons"]');
         if (gEl) {
@@ -575,12 +577,10 @@ local WAREHOUSE_JS = ([[
 
     //endregion
 
-    //region ENGINE — observer/kick loop, dictionary loader, boot
-    // Disconnect the observer during our own mutations (input/cells/plate), otherwise they would loop the MutationObserver.
+    //region ENGINE - observer/kick loop, dictionary loader, boot
     let obs = null;
     const OBS_OPTS = { childList: true, subtree: true };
     const kick = () => {
-        // A stale closure (in-flight fetch finishing after a version-change teardown) must not revive the old observer.
         const cur = window.__tmInvPlus;
         if (!cur || cur.version !== VERSION) return;
         if (obs) obs.disconnect();
@@ -588,9 +588,6 @@ local WAREHOUSE_JS = ([[
         finally { if (obs) obs.observe(document.body, OBS_OPTS); }
     };
 
-    // Dictionary with a localStorage cache and ETag auto-update.
-    // Start instantly from cache, then revalidate with a conditional GET: 304 -> current (headers-only on the wire); 200 -> the list actually changed (~once in months) -> parse, apply, re-cache.
-    // Check and update are the same request, so there is nothing to notify the user about.
     const loadCache = () => {
         try {
             const c = JSON.parse(localStorage.getItem(CACHE_KEY) || 'null');
@@ -638,7 +635,6 @@ local WAREHOUSE_JS = ([[
     };
     const reloadNames = () => loadNames(true);
 
-    // Debounce: mounting a grid window floods DOM mutations — collapse them into a single kick (50ms feels instant, without dozens of redundant passes).
     let kickPending = false;
     const scheduleKick = () => {
         if (kickPending) return;
@@ -649,7 +645,12 @@ local WAREHOUSE_JS = ([[
     obs = new MutationObserver(scheduleKick);
     const iv = setInterval(kick, 1500);
 
-    window.__tmInvPlus = { version: VERSION, kick, obs, iv, state, reloadNames };
+    const setTakeAllRunning = (running) => {
+        state.takeAllRunning = !!running;
+        applyFilter();
+    };
+
+    window.__tmInvPlus = { version: VERSION, kick, obs, iv, state, reloadNames, setTakeAllRunning };
     kick();
     loadNames();
     //endregion
@@ -884,6 +885,28 @@ local function reloadNames()
     evalcef("(()=>{if(window.__tmInvPlus&&window.__tmInvPlus.reloadNames)window.__tmInvPlus.reloadNames();})()")
 end
 
+-- Real outgoing CEF action (sub-command 18, actually sent to the server) - distinct from evalcef's sub-command 17,
+-- which only emulates a local receive and never leaves the client.
+local function sendCefAction(str)
+    local bs = raknetNewBitStream()
+    raknetBitStreamWriteInt8(bs, 220)
+    raknetBitStreamWriteInt8(bs, 18)
+    raknetBitStreamWriteInt16(bs, #str)
+    raknetBitStreamWriteString(bs, str)
+    raknetBitStreamWriteInt32(bs, 0)
+    raknetSendBitStream(bs)
+    raknetDeleteBitStream(bs)
+end
+
+-- Arizona's own toast (event.notify.initialize), triggered locally without server involvement.
+-- Used here instead of chat: the warehouse window covers the chat anyway. title/text go through
+-- cp(), same as every sampAddChatMessage call in this file.
+local function notifyToast(kind, title, text, ms)
+    local function esc(s) return (s:gsub('\\', '\\\\'):gsub('"', '\\"')) end
+    evalcef(('window.executeEvent("event.notify.initialize", "[\\"%s\\", \\"%s\\", \\"%s\\", \\"%s\\"]");')
+        :format(esc(kind), esc(cp(title)), esc(cp(text)), esc(tostring(ms))))
+end
+
 -- Shared by both regions below (dict cache reading and update-manifest reading).
 local function readFile(path)
     local f = io.open(path, 'rb')
@@ -1094,6 +1117,107 @@ local function doExport()
 
         sampAddChatMessage(tag .. cp('Экспортировано слотов: ') .. #slots .. cp(' -> {5CC9FF}') .. shortPath(fname), -1)
     end)
+end
+
+-- Hidden "Забрать всё"/"Забрать" plate: same invBuf/amount data as /ipexport, but instead of writing a file it
+-- moves every matching slot into the player's own inventory, one moveItemForce per slot.
+local TAKEALL_SLOT_TIMEOUT = 2 -- seconds to wait for a slot to clear before giving up on the whole run
+local takeAllRunning = false
+local takeAllStopRequested = false
+
+local function setTakeAllRunningJS(running)
+    evalcef('(()=>{if(window.__tmInvPlus&&window.__tmInvPlus.setTakeAllRunning)window.__tmInvPlus.setTakeAllRunning('
+        .. (running and 'true' or 'false') .. ');})()')
+end
+
+-- ids is the set of item ids JS already decided to show (as strings) - matching happens once, in JS, not
+-- duplicated here. An empty table means nothing to take.
+local function startTakeAll(ids)
+    if takeAllRunning then return end
+    local containerType = lastOpenType
+    if not containerType or not invBuf[containerType] then
+        notifyToast('info', 'Inventory Plus', 'Нечего забирать', 2500)
+        return
+    end
+
+    local wanted = {}
+    for _, id in ipairs(ids) do wanted[id] = true end
+
+    local slots = {}
+    for slot, entry in pairs(invBuf[containerType]) do
+        if wanted[tostring(entry.item)] then slots[#slots + 1] = slot end
+    end
+    if #slots == 0 then
+        -- invBuf can have moved on since the click (item taken/moved elsewhere in the meantime).
+        notifyToast('info', 'Inventory Plus', 'Нечего забирать', 2500)
+        return
+    end
+    table.sort(slots)
+
+    takeAllRunning = true
+    takeAllStopRequested = false
+    setTakeAllRunningJS(true)
+
+    lua_thread.create(function()
+        local stuck = false
+        for _, slot in ipairs(slots) do
+            if takeAllStopRequested then break end
+            local entry = invBuf[containerType][slot]
+            if entry then
+                sendCefAction(('inventory.moveItemForce|{"slot": %d, "type": %d, "amount": %d}')
+                    :format(slot, containerType, entry.amount or 1))
+
+                local waited = 0
+                while invBuf[containerType][slot] and not takeAllStopRequested
+                    and waited < TAKEALL_SLOT_TIMEOUT * 1000 do
+                    wait(50)
+                    waited = waited + 50
+                end
+
+                if invBuf[containerType][slot] and not takeAllStopRequested then
+                    stuck = true -- no confirmation at all - likely own inventory full, further slots would fail the same way
+                    break
+                end
+            end
+        end
+
+        takeAllRunning = false
+        setTakeAllRunningJS(false)
+        if stuck then
+            notifyToast('error', 'Inventory Plus', 'Остановлено — похоже, инвентарь переполнен', 4000)
+        elseif not takeAllStopRequested then
+            notifyToast('success', 'Inventory Plus', 'Забрано предметов: ' .. #slots, 3000)
+        end
+    end)
+end
+
+local TAKEALL_TRIGGER = 'tmInvPlusTakeAll|'
+local TAKEALL_STOP_TRIGGER = 'tmInvPlusTakeAllStop'
+
+-- Packet 220, sub-command 18 out - a real outgoing action, unlike onReceivePacket above (17 in). window.cef.SendMessage
+-- routes through here; we suppress our own made-up action names (return false) so the server never sees them.
+function onSendPacket(id, bs)
+    if id ~= 220 then return end
+    raknetBitStreamIgnoreBits(bs, 8)
+    if raknetBitStreamReadInt8(bs) ~= 18 then
+        raknetBitStreamSetReadOffset(bs, 0)
+        return
+    end
+    local len = raknetBitStreamReadInt16(bs)
+    local ok, str = pcall(raknetBitStreamReadString, bs, len)
+    raknetBitStreamSetReadOffset(bs, 0)
+    if not ok or not str then return end
+
+    if str:find(TAKEALL_TRIGGER, 1, true) == 1 then
+        local ids = {}
+        for id in str:sub(#TAKEALL_TRIGGER + 1):gmatch('[^,]+') do ids[#ids + 1] = id end
+        startTakeAll(ids)
+        return false
+    end
+    if str:find(TAKEALL_STOP_TRIGGER, 1, true) == 1 then
+        takeAllStopRequested = true
+        return false
+    end
 end
 --endregion
 
