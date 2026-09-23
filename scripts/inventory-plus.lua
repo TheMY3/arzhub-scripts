@@ -1,6 +1,6 @@
 script_name('[TM] Inventory Plus')
 script_author('TheMY3')
-script_version('2.5.0')
+script_version('2.6.0')
 
 -- Тема на форуме (актуальная версия, обсуждение): https://www.blast.hk/threads/255785/
 
@@ -24,6 +24,7 @@ local WAREHOUSE_JS = ([[
     //region CONFIG & TEARDOWN - selectors, prior/legacy instance cleanup, shared state
     const GRID_SEL = '.shop__grid-wrapper > .inventory-grid, .warehouse__grid > .inventory-grid';
     const INPUT_ID = 'tm-invplus-search';
+    const STYLE_ID = 'tm-invplus-style';
     const DICT_MODE = '__DICT_MODE__';
     const ITEMS_URL = 'https://arzhub.top/api/public/marketplace/items/' + DICT_MODE;
     const CACHE_KEY = 'tm-invplus-names-' + DICT_MODE;
@@ -57,6 +58,7 @@ local WAREHOUSE_JS = ([[
                 (w || el).remove();
             });
         } catch (e) {}
+        try { document.querySelectorAll('#' + STYLE_ID).forEach((el) => el.remove()); } catch (e) {}
         window.__tmInvPlus = null;
     }
 
@@ -175,6 +177,27 @@ local WAREHOUSE_JS = ([[
     };
 
     const NAME_CLASS = 'tm-item-name';
+    // The banner hides while the cell is hovered - the game names the item in its own tooltip anyway,
+    // so whatever the banner covers becomes readable without a fix per covered element.
+    const ensureStyle = () => {
+        if (document.getElementById(STYLE_ID) || !document.head) return;
+        const st = document.createElement('style');
+        st.id = STYLE_ID;
+        st.textContent = '.inventory-item:hover .' + NAME_CLASS + '{display:none}';
+        document.head.appendChild(st);
+    };
+
+    // The cell's own timer sits right where the banner goes, so it is nudged out from under it.
+    // The nudge is additive, and a non-empty margin is always ours - the game ships it without inline styles.
+    const TIMER_SEL = '.inventory-item__timer';
+    const TIMER_SHIFT = gs(8);
+    const shiftTimer = (item, on) => {
+        const t = item.querySelector(TIMER_SEL);
+        if (!t) return;
+        if (on) { if (!t.style.marginTop) t.style.marginTop = TIMER_SHIFT; }
+        else if (t.style.marginTop) t.style.marginTop = '';
+    };
+
     const labelItem = (hoc, names) => {
         const item = hoc.querySelector('.inventory-item');
         if (!item) return;
@@ -182,7 +205,7 @@ local WAREHOUSE_JS = ([[
         const id = img ? itemId(img) : null;
         const nm = (names && id) ? names[id] : null;
         let el = item.querySelector('.' + NAME_CLASS);
-        if (!nm) { if (el) el.remove(); return; }   // no name/dictionary — no banner
+        if (!nm) { if (el) el.remove(); shiftTimer(item, false); return; }   // no name/dictionary — no banner, no shift
         if (!el) {
             if (!item.style.position) item.style.position = 'relative';
             el = document.createElement('div');
@@ -204,6 +227,7 @@ local WAREHOUSE_JS = ([[
             item.appendChild(el);
         }
         if (el.textContent !== nm) el.textContent = nm;
+        shiftTimer(item, true);
     };
 
     const cellName = (hoc, names) => {
@@ -584,7 +608,7 @@ local WAREHOUSE_JS = ([[
         const cur = window.__tmInvPlus;
         if (!cur || cur.version !== VERSION) return;
         if (obs) obs.disconnect();
-        try { ensureInput(); applyFilter(); try { enhanceDialog(); } catch (e) {} }
+        try { ensureStyle(); ensureInput(); applyFilter(); try { enhanceDialog(); } catch (e) {} }
         finally { if (obs) obs.observe(document.body, OBS_OPTS); }
     };
 
