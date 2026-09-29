@@ -1,6 +1,6 @@
 script_name('Auto Spawn')
 script_author('TheMY3')
-script_version('0.9.0')
+script_version('1.0.0')
 
 local moonloader = require('moonloader')  -- download_status for self-update.
 local encoding = require('encoding')
@@ -434,13 +434,13 @@ local function finishUpdate(entry, tempPath)
 
     if not gotVersion then
         removeIfExists(tempPath)
-        notify('Обновление не удалось: скачанный файл не похож на скрипт. Скачайте вручную: {FFBF00}' .. manualUrl(entry))
+        notify('Обновление не удалось: скачанный файл не похож на скрипт. Скачайте вручную: {5CC9FF}' .. manualUrl(entry))
         return
     end
     if gotVersion == thisScript().version then
         -- The CDN still serves the previous file right after a release.
         removeIfExists(tempPath)
-        notify('CDN ещё отдаёт старую версию, попробуйте через пару минут: {FFBF00}/asupdate')
+        notify('CDN ещё отдаёт старую версию, попробуйте через пару минут: {5CC9FF}/asupdate')
         return
     end
     if gotVersion ~= entry.version then
@@ -452,11 +452,11 @@ local function finishUpdate(entry, tempPath)
     local ok, err = atomicReplace(thisScript().path, tempPath)
     if not ok then
         removeIfExists(tempPath)
-        notify('Обновление не удалось: ' .. err .. '. Скачайте вручную: {FFBF00}' .. manualUrl(entry))
+        notify('Обновление не удалось: ' .. err .. '. Скачайте вручную: {5CC9FF}' .. manualUrl(entry))
         return
     end
 
-    notify('Обновлено до {FFBF00}v' .. entry.version .. '{FFFFFF}, перезагружаю скрипт...')
+    notify('Обновлено до {5CC9FF}v' .. entry.version .. '{FFFFFF}, перезагружаю скрипт...')
     lua_thread.create(function()
         wait(300)
         thisScript():reload()
@@ -472,7 +472,7 @@ local function downloadUpdate(entry)
         local dl_status = moonloader.download_status
         local claim = withTimeout(UPDATE_FILE_TIMEOUT, function()
             removeIfExists(tempPath)
-            notify('Обновление не удалось: таймаут скачивания. Скачайте вручную: {FFBF00}' .. manualUrl(entry))
+            notify('Обновление не удалось: таймаут скачивания. Скачайте вручную: {5CC9FF}' .. manualUrl(entry))
         end)
         downloadUrlToFile(UPDATE_BASE_URL .. entry.path, tempPath, function(_, status)
             if status == dl_status.STATUS_ENDDOWNLOADDATA then
@@ -480,7 +480,7 @@ local function downloadUpdate(entry)
             elseif status == dl_status.STATUSEX_ENDDOWNLOAD then
                 if claim() then
                     removeIfExists(tempPath)
-                    notify('Не удалось скачать обновление. Скачайте вручную: {FFBF00}' .. manualUrl(entry))
+                    notify('Не удалось скачать обновление. Скачайте вручную: {5CC9FF}' .. manualUrl(entry))
                 end
             end
         end)
@@ -553,7 +553,7 @@ local function checkForUpdateSilently()
     fetchManifestEntry(
         function(entry)
             if isNewer(entry) then
-                notify('Доступна новая версия {FFBF00}v' .. entry.version .. '{FFFFFF}! Обновить: {FFBF00}/asupdate')
+                notify('Доступна новая версия {5CC9FF}v' .. entry.version .. '{FFFFFF}! Обновить: {5CC9FF}/asupdate')
             end
         end,
         function() end
@@ -571,7 +571,7 @@ function main()
     removeIfExists(thisScript().path .. '.manifest.tmp')
     saveConfig()
     local target = config.settings.target
-    notify('Загружен {FFBF00}v' .. thisScript().version .. '{FFFFFF}. '
+    notify('Загружен {5CC9FF}v' .. thisScript().version .. '{FFFFFF}. '
         .. (target ~= '' and 'Выбранное место спавна: ' .. target or 'Место спавна не выбрано'))
     sampRegisterChatCommand('asupdate', checkForUpdate)
     checkForUpdateSilently()
