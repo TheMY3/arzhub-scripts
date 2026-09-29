@@ -74,6 +74,24 @@
           ]
         }
       ]
+    },
+    {
+      "id": "auto-spawn",
+      "name": "Auto Spawn",
+      "filename": "[TheMY3] Auto Spawn.lua",
+      "legacy_filenames": [],
+      "version": "0.9.0",
+      "path": "scripts/auto-spawn.lua",
+      "topic": "",
+      "actual": true,
+      "changelog": [
+        {
+          "version": "0.9.0",
+          "notes": [
+            "Первый релиз: звёздочка вместо значка метки, отсчёт на кнопке «Начать игру», отмена отсчёта ручным выбором."
+          ]
+        }
+      ]
     }
   ]
 }
