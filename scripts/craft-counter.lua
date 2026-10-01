@@ -1,6 +1,6 @@
 script_name('Craft Counter')
 script_author('TheMY3')
-script_version('1.3.0')
+script_version('1.3.1')
 
 -- Forum topic (current version, discussion): https://www.blast.hk/threads/246012/
 
@@ -739,15 +739,16 @@ local function downloadUpdate(entry)
 			removeIfExists(tempPath)
 			notify('Обновление не удалось: таймаут скачивания. Скачайте вручную: {5CC9FF}' .. manualUrl(entry))
 		end)
+		-- Only the final status: at STATUS_ENDDOWNLOADDATA the file may not be in place yet.
 		downloadUrlToFile(UPDATE_BASE_URL .. entry.path, tempPath, function(_, status)
-			if status == dl_status.STATUS_ENDDOWNLOADDATA then
-				if claim() then finishUpdate(entry, tempPath) end
-			elseif status == dl_status.STATUSEX_ENDDOWNLOAD then
-				if claim() then
-					removeIfExists(tempPath)
-					notify('Не удалось скачать обновление. Скачайте вручную: {5CC9FF}' .. manualUrl(entry))
-				end
+			if status ~= dl_status.STATUSEX_ENDDOWNLOAD or not claim() then return end
+			local content = readFile(tempPath)
+			if not content or content == '' then
+				removeIfExists(tempPath)
+				notify('Не удалось скачать обновление. Скачайте вручную: {5CC9FF}' .. manualUrl(entry))
+				return
 			end
+			finishUpdate(entry, tempPath)
 		end)
 	end)
 end
@@ -762,31 +763,30 @@ local function fetchManifestEntry(onEntry, onError)
 		onError('таймаут')
 	end)
 
+	-- Only the final status: at STATUS_ENDDOWNLOADDATA the file may not be in place yet, and decodeJson('') is logged as an exception even under pcall.
 	downloadUrlToFile(UPDATE_MANIFEST_URL, manifestPath, function(_, status)
-		if status == dl_status.STATUS_ENDDOWNLOADDATA then
-			if not claim() then return end
-			local content = readFile(manifestPath)
-			removeIfExists(manifestPath)
-			local ok, data = pcall(decodeJson, content or '')
-			if not ok or type(data) ~= 'table' or not data.scripts then
-				onError('битый список версий')
-				return
-			end
-
-			local entry
-			for _, item in ipairs(data.scripts) do
-				if item.id == UPDATE_SCRIPT_ID then entry = item break end
-			end
-			if not entry then
-				onError('скрипт не найден в списке версий')
-				return
-			end
-			onEntry(entry)
-		elseif status == dl_status.STATUSEX_ENDDOWNLOAD then
-			if not claim() then return end
-			removeIfExists(manifestPath)
+		if status ~= dl_status.STATUSEX_ENDDOWNLOAD or not claim() then return end
+		local content = readFile(manifestPath)
+		removeIfExists(manifestPath)
+		if not content or content == '' then
 			onError('нет соединения')
+			return
 		end
+		local ok, data = pcall(decodeJson, content)
+		if not ok or type(data) ~= 'table' or not data.scripts then
+			onError('битый список версий')
+			return
+		end
+
+		local entry
+		for _, item in ipairs(data.scripts) do
+			if item.id == UPDATE_SCRIPT_ID then entry = item break end
+		end
+		if not entry then
+			onError('скрипт не найден в списке версий')
+			return
+		end
+		onEntry(entry)
 	end)
 end
 
