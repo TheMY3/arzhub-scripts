@@ -1,6 +1,6 @@
 script_name('Case Opener')
 script_author('TheMY3')
-script_version('1.9.1')
+script_version('1.9.2')
 
 
 local moonloader = require 'moonloader' -- download_status for self-update.
@@ -20,7 +20,7 @@ local new = imgui.new
 -- Constants
 -- =========================================================================
 
-local TAG = '{FFD700}[TM] Case Opener{FFFFFF}: '
+local TAG = '{FFA500}[TM] Case Opener{FFFFFF}: '
 
 -- Paths for inicfg (relative to config) and for io (absolute) are built from one piece.
 local CFG_SUB = 'TheMY3/caseopener'
@@ -1678,7 +1678,7 @@ function sampev.onShowDialog(dialogId, style, title, button1, button2, text)
 end
 
 -- =========================================================================
--- SELF-UPDATE (/caseupdate)
+-- SELF-UPDATE (/coupdate)
 -- =========================================================================
 
 local UPDATE_MANIFEST_URL = 'https://raw.githubusercontent.com/TheMY3/arzhub-scripts/main/manifest.json'
@@ -1748,7 +1748,7 @@ local function finishUpdate(entry, tempPath)
     if gotVersion == thisScript().version then
         -- The CDN still serves the previous file right after a release.
         removeIfExists(tempPath)
-        chat('CDN ещё отдаёт старую версию, попробуйте через пару минут: {5CC9FF}/caseupdate')
+        chat('CDN ещё отдаёт старую версию, попробуйте через пару минут: {5CC9FF}/coupdate')
         return
     end
     if gotVersion ~= entry.version then
@@ -1782,15 +1782,16 @@ local function downloadUpdate(entry)
             removeIfExists(tempPath)
             chat('Обновление не удалось: таймаут скачивания. Скачайте вручную: {5CC9FF}' .. manualUrl(entry))
         end)
+        -- Only the final status: at STATUS_ENDDOWNLOADDATA the file may not be in place yet.
         downloadUrlToFile(UPDATE_BASE_URL .. entry.path, tempPath, function(_, status)
-            if status == dl_status.STATUS_ENDDOWNLOADDATA then
-                if claim() then finishUpdate(entry, tempPath) end
-            elseif status == dl_status.STATUSEX_ENDDOWNLOAD then
-                if claim() then
-                    removeIfExists(tempPath)
-                    chat('Не удалось скачать обновление. Скачайте вручную: {5CC9FF}' .. manualUrl(entry))
-                end
+            if status ~= dl_status.STATUSEX_ENDDOWNLOAD or not claim() then return end
+            local content = readFile(tempPath)
+            if not content or content == '' then
+                removeIfExists(tempPath)
+                chat('Не удалось скачать обновление. Скачайте вручную: {5CC9FF}' .. manualUrl(entry))
+                return
             end
+            finishUpdate(entry, tempPath)
         end)
     end)
 end
@@ -1805,31 +1806,30 @@ local function fetchManifestEntry(onEntry, onError)
         onError('таймаут')
     end)
 
+    -- Only the final status: at STATUS_ENDDOWNLOADDATA the file may not be in place yet, and decodeJson('') is logged as an exception even under pcall.
     downloadUrlToFile(UPDATE_MANIFEST_URL, manifestPath, function(_, status)
-        if status == dl_status.STATUS_ENDDOWNLOADDATA then
-            if not claim() then return end
-            local content = readFile(manifestPath)
-            removeIfExists(manifestPath)
-            local ok, data = pcall(decodeJson, content or '')
-            if not ok or type(data) ~= 'table' or not data.scripts then
-                onError('битый список версий')
-                return
-            end
-
-            local entry
-            for _, item in ipairs(data.scripts) do
-                if item.id == UPDATE_SCRIPT_ID then entry = item break end
-            end
-            if not entry then
-                onError('скрипт не найден в списке версий')
-                return
-            end
-            onEntry(entry)
-        elseif status == dl_status.STATUSEX_ENDDOWNLOAD then
-            if not claim() then return end
-            removeIfExists(manifestPath)
+        if status ~= dl_status.STATUSEX_ENDDOWNLOAD or not claim() then return end
+        local content = readFile(manifestPath)
+        removeIfExists(manifestPath)
+        if not content or content == '' then
             onError('нет соединения')
+            return
         end
+        local ok, data = pcall(decodeJson, content)
+        if not ok or type(data) ~= 'table' or not data.scripts then
+            onError('битый список версий')
+            return
+        end
+
+        local entry
+        for _, item in ipairs(data.scripts) do
+            if item.id == UPDATE_SCRIPT_ID then entry = item break end
+        end
+        if not entry then
+            onError('скрипт не найден в списке версий')
+            return
+        end
+        onEntry(entry)
     end)
 end
 
@@ -1861,7 +1861,7 @@ local function checkForUpdateSilently()
     fetchManifestEntry(
         function(entry)
             if isNewer(entry) then
-                chat('Доступна новая версия {5CC9FF}v' .. entry.version .. '{FFFFFF}! Обновить: {5CC9FF}/caseupdate')
+                chat('Доступна новая версия {5CC9FF}v' .. entry.version .. '{FFFFFF}! Обновить: {5CC9FF}/coupdate')
             end
         end,
         function() end
@@ -1896,7 +1896,7 @@ function main()
     end
 
     sampRegisterChatCommand('caselogs', cmdLog)
-    sampRegisterChatCommand('caseupdate', checkForUpdate)
+    sampRegisterChatCommand('coupdate', checkForUpdate)
     checkForUpdateSilently()
 
     while true do
