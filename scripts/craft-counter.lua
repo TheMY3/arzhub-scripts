@@ -1,6 +1,6 @@
 script_name('Craft Counter')
 script_author('TheMY3')
-script_version('1.2.9')
+script_version('1.3.0')
 
 -- Forum topic (current version, discussion): https://www.blast.hk/threads/246012/
 
