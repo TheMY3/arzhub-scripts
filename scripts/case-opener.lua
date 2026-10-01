@@ -1,6 +1,6 @@
 script_name('Case Opener')
 script_author('TheMY3')
-script_version('1.9.0')
+script_version('1.9.1')
 
 
 local moonloader = require 'moonloader' -- download_status for self-update.
@@ -22,7 +22,7 @@ local new = imgui.new
 
 local TAG = '{FFD700}[TM] Case Opener{FFFFFF}: '
 
--- inicfg wants a path relative to moonloader/config, io and createDirectory want an absolute one, so both are built from the same piece.
+-- Paths for inicfg (relative to config) and for io (absolute) are built from one piece.
 local CFG_SUB = 'TheMY3/caseopener'
 local CFG_PATH = CFG_SUB .. '/config.ini'
 local CFG_DIR = getWorkingDirectory() .. '\\config\\' .. (CFG_SUB:gsub('/', '\\'))
@@ -32,9 +32,7 @@ local ITEMS_PATH = CFG_DIR .. '\\items.json'
 -- Shards and money arrive as ordinary prizes but are counted differently.
 local ITEM_SHARDS = 9294
 
--- For money and AZ coins `count` is an amount, not a number of pieces.
--- The pool lists such prizes under a variant id (picture id = id * 10000 + variant: 731 -> 7310001, 9296 -> 92960002) while the reward carries the base id, so the scanned dictionary never matches them.
--- Labels are built here rather than looked up, and they copy the in-game card: «50 AZ-коинов», «$ 1.000.000» with dots.
+-- For money and AZ coins `count` is an amount; the pool shows them under a variant id (id * 10000 + variant), so labels are built here.
 local CURRENCY_LABEL = {
     [731] = function(n) return n .. ' AZ-коинов' end,
     -- The card separates thousands with dots, not spaces.
@@ -60,15 +58,13 @@ local CASE_NAMES = {
     [10] = 'CASE CAPTURE',
 }
 
--- Some prizes bypass CEF entirely: no card, only a SAMP dialog. The condition is external (a character skin), but people grind cases exactly for those, so they are recorded as an ordinary drop of the case being opened.
--- Keyed by a fragment of the dialog text: neither id, name nor rarity is in the dialog,
--- and such a prize never appears in the case pool either, so all three are set here.
+-- Prizes credited by a SAMP dialog instead of a card (skin bonus), keyed by a fragment of the dialog text.
 local DIALOG_BONUSES = {
     { find = 'Монету Новой Мафии', item = 10098, count = 1,
       name = 'Монета Новой Мафии (Вечная)', rarity = 'gold' },
 }
 
--- Two independent markers of such a dialog, either of which is accepted: with a single sample we cannot tell which one is stable - the title states the occasion, the body states the substance.
+-- Either marker is enough: one sample does not tell which one is stable.
 local BONUS_TITLE = 'УРА! УРА!' -- the occasion
 local BONUS_MARK = 'Предмет уже у вас в инвентаре' -- the substance: nothing to choose
 
@@ -78,7 +74,7 @@ local OPENALL_TRIES = 40 -- «Открыть всё» waits longer: the video ha
 local OPENALL_STEP = 200
 local DECOR_TRIES = 40 -- how long the decorator waits for the window to mount.
 local DECOR_STEP = 250
--- The game's own item effect: a transparent square with the digit in the top-left corner, stretched over the whole card.
+-- Game item effect: a transparent square with the digit in the top-left corner.
 local DIGIT_URL = 'https://cdn.azresources.cloud/projects/arizona-rp/assets/images/inventory/effects/digit_'
 local FLUSH_DELAY = 1.5 -- seconds to wait for trailing informers before writing history.
 
@@ -190,12 +186,12 @@ local function logDebug(msg)
     print('[CaseOpener] ' .. cyr(tostring(msg)))
 end
 
--- For strings that came from the server: they are CP1251 already, converting them twice corrupts them.
+-- Server strings are CP1251 already: converting them twice corrupts them.
 local function logRaw(msg)
     print('[CaseOpener] ' .. tostring(msg))
 end
 
--- string.lower only knows ASCII while item names are UTF-8 (А-П at D0 90..D0 9F, Р-Я at D0 A0..D0 AF), so without this a search for «монета» misses «Монета».
+-- string.lower is ASCII-only; this one also lowers UTF-8 Cyrillic.
 local function lowerUtf8(str)
     str = str:lower()
     local out, i = {}, 1
@@ -233,7 +229,7 @@ local function caseName(id)
     return CASE_NAMES[tonumber(id) or -1] or ('Кейс #' .. tostring(id))
 end
 
--- Look up the exact variant (id plus count) first, then the plain item: name and rarity are per-variant in the pool, while the informer and the chat only know the base name.
+-- Exact variant (id + count) first, then the base item.
 local function itemRec(id, count)
     if count then
         local rec = items[tostring(id) .. 'x' .. tostring(count)]
@@ -242,7 +238,7 @@ local function itemRec(id, count)
     return items[tostring(id)]
 end
 
--- Show exactly what the player sees on the card: the pool label is stored as is, quantity suffix included.
+-- The pool label is kept as is, quantity suffix included.
 local function itemName(id, count)
     local currency = CURRENCY_LABEL[tonumber(id) or -1]
     if currency then return currency(count or 0) end
@@ -272,7 +268,7 @@ local function formatNum(n)
     return (n < 0 and '-' or '') .. s
 end
 
--- Percentages read well while they are large; for a rare prize 0.4% says nothing and «1 из 250» says everything, hence two scales.
+-- Rare prizes read better as «1 из N» than as a tiny percent.
 local function formatChance(events, opens)
     if events <= 0 or opens <= 0 then return '-' end
     local pct = events / opens * 100
@@ -345,7 +341,7 @@ local function saveHistory()
     dataRev = dataRev + 1
 end
 
--- A pool scan teaches the dictionary dozens of items in a row: no need to write the file for each one.
+-- A pool scan learns many items at once: the file is written once.
 local itemsDeferred = false
 local itemsRev = 0 -- bumped on every change to the dictionary, so the prize table knows its names went stale.
 
@@ -354,7 +350,7 @@ local function saveItems()
     saveJson(ITEMS_PATH, items)
 end
 
--- The name arrives from three sources (informer, chat, pool scan): whoever got there first fills it in.
+-- The name comes from the informer, the chat or the pool scan, whichever is first.
 local function learnItem(id, name, rarity, shards, count)
     local key = tostring(id)
     if count then key = key .. 'x' .. tostring(count) end
@@ -382,7 +378,7 @@ local function learnItem(id, name, rarity, shards, count)
     end
 end
 
--- The game itself treats item plus count as distinct prizes: «Монета x2» is a separate pool entry from «Монета x1» and their rarity differs. Merging them into one row would hide how often a single piece dropped versus a stack.
+-- Item plus count is a distinct prize with its own rarity, as in the game pool.
 local function prizeKey(item, count)
     return tostring(item) .. 'x' .. tostring(count)
 end
@@ -395,7 +391,7 @@ local function keyParts(key, rec)
     return tonumber(key) or 0, 1
 end
 
--- Prizes live inside their own case, otherwise the chance gets a foreign denominator: events would be divided by every opening, including openings of other case types.
+-- Prizes are kept per case so the chance has the right denominator.
 local function ensureCase(date, caseId)
     local day = history[date]
     if not day then
@@ -466,7 +462,7 @@ local function view()
     return viewCache
 end
 
--- The overlay is drawn every frame and a full pass over the history is wasteful there: it only needs the opening counters of the current case.
+-- Only the overlay counters, without a full pass over the history every frame.
 local overlayCache = nil
 
 local function overlayCounts(caseId)
@@ -517,8 +513,7 @@ end
 -- CEF
 -- =========================================================================
 
--- Inject queue. raknetEmulRpcReceiveBitStream runs the packet through script handlers synchronously, so calling it from a packet hook or from inside a coroutine kills the script with "cannot resume non-suspended coroutine".
--- Everything bound for CEF piles up here and leaves from main().
+-- Injects queue up and leave only from main(): emulating a packet from a hook or a coroutine kills the script.
 local injectQueue = {}
 
 local function queueInject(js)
@@ -539,7 +534,7 @@ local function evalcef(js)
     return true
 end
 
--- The video overlay does not mount instantly, so the injected script retries; if the button never shows up it fast-forwards the <video> itself.
+-- The skip button mounts late: retry, then fast-forward the video.
 local function skipVideo()
     local js = ([[
 (function () {
@@ -559,8 +554,8 @@ local function skipVideo()
     queueInject(js)
 end
 
--- The button is found by its text, never by counting: a single-prize case has «Открыть всё» too, but nothing guarantees exactly one button, and the reward screen puts «Забрать» and «Расколоть» in the same container with the same class. A blind click would decide the fate of the prizes for the player.
--- Needles are \uXXXX escaped so parsing does not depend on the source encoding. Long brackets rather than quotes: Lua 5.1 knows no \u and JS must receive a literal backslash.
+-- Buttons are found by text, never by position: «Забрать» and «Расколоть» share the container and class.
+-- Needles are u-escaped inside long brackets: JS must receive a literal backslash.
 local JS_OPEN = [[\u043e\u0442\u043a\u0440\u044b\u0442\u044c]] -- открыть
 local JS_TAKE = [[\u0437\u0430\u0431\u0440\u0430\u0442\u044c]] -- забрать
 local JS_SHARD = [[\u0440\u0430\u0441\u043a\u043e\u043b\u043e\u0442\u044c]] -- расколоть
@@ -578,7 +573,7 @@ local function openAllCards()
             for (var i = 0; i < btns.length; i++) {
                 var kit = btns[i].querySelector('.kit-button');
                 var label = btns[i].textContent.toLowerCase();
-                // The player decides the fate of the prizes: seeing these buttons, back off.
+                // Fate buttons are up: back off.
                 if (label.indexOf(TAKE) !== -1 || label.indexOf(SHARD) !== -1) {
                     clearInterval(timer);
                     return;
@@ -597,8 +592,8 @@ local function openAllCards()
     queueInject(js)
 end
 
--- Hint text for a JS string literal: anything outside plain ASCII, quotes and backslashes go as \uXXXX, so DOM text does not depend on the source encoding.
--- The backslash is built with string.char so the escape survives any tooling between here and the file.
+-- Escapes non-ASCII, quotes and backslashes as JS u-escapes.
+-- The backslash comes from string.char so no tooling eats it.
 local function jsText(str)
     local out, i = {}, 1
     while i <= #str do
@@ -620,7 +615,7 @@ local function jsText(str)
     return table.concat(out)
 end
 
--- What every case screen says about the keys. Empty when the key is turned off.
+-- Key hint lines for every case screen.
 local function hintTexts()
     local act = keyLabel(config.settings.action_key)
     return jsText(act .. ' - открыть'),
@@ -629,7 +624,7 @@ local function hintTexts()
         jsText('Используйте цифры или ' .. act .. ' - выбрать все')
 end
 
--- Key name for a hint inside the CEF window: plain ASCII only, an exotic name is dropped rather than broken.
+-- ASCII-only key name for the CEF window.
 local function jsKeyName(vk)
     if not vk or vk <= 0 or not vk_ok then return '' end
     local ok, name = pcall(vkeys.id_to_name, vk)
@@ -637,17 +632,17 @@ local function jsKeyName(vk)
     return (name:gsub('[^%w%+%-]', ''))
 end
 
--- Shared by every inject that touches the reward cards. Cards are matched by position: it is the order of initializeRewards and of the sell/save indexes.
+-- JS shared by every inject that touches the reward cards; cards are matched by position, as the sell/save indexes are.
 local function prizeLib()
     return ([[
     var TAKE = '%s', SHARD = '%s', DIGIT = '%s';
     var TAKE_KEY = '%s', SHARD_KEY = '%s';
     var HINT_MAIN = '%s', HINT_SKIP = '%s', HINT_HIDDEN = '%s', HINT_OPEN = '%s';
-    // The game's own gray captions use HeadingNowRegular; the rest of the stack only matters if a build renames it.
+    // Font of the game's own gray captions.
     var HINT_FONT = '"HeadingNowRegular", sans-serif';
     var HINT_CSS = 'color:rgba(255,255,255,.55);font-size:14px;text-align:center;pointer-events:none;'
         + 'font-family:' + HINT_FONT + ';';
-    // The page sets no default font: should HeadingNowRegular vanish, the button caption's font beats a serif fallback.
+    // The page has no default font: fall back to the button caption's one.
     function borrowFont(hint, scope) {
         var label = scope && scope.querySelector('.kit-button__text');
         var ls = label && window.getComputedStyle ? window.getComputedStyle(label) : null;
@@ -660,14 +655,14 @@ local function prizeLib()
         d.style.cssText = HINT_CSS;
         return d;
     }
-    // One gray line per screen, the same wording style as the game's own «Осталось N шт.».
+    // One gray hint line per screen.
     function screenHints() {
         var count = document.querySelector('.open-case-main__main-count');
         if (count && count.parentNode && !document.querySelector('.tm-case-hint-main')) {
             var h = hintNode('tm-case-hint-main', HINT_MAIN);
-            // Copied from the counter so the line looks native at any interface scale.
+            // Copied from the counter to match the interface scale.
             var cs = window.getComputedStyle ? window.getComputedStyle(count) : null;
-            // Above the counter, taking over its gap from the button; the negative bottom margin cancels the counter's own top one, leaving 4px.
+            // Takes the counter's gap from the button and leaves 4px to the counter.
             if (cs) {
                 h.style.color = cs.color;
                 h.style.fontSize = cs.fontSize;
@@ -679,7 +674,7 @@ local function prizeLib()
         }
         var skip = document.querySelector('.open-case-video__button-skip');
         if (skip && !skip.querySelector('.tm-case-hint')) {
-            // Hangs under the button without moving it, whatever layout the overlay uses.
+            // Absolute, so the button does not move.
             if (window.getComputedStyle && window.getComputedStyle(skip).position === 'static') {
                 skip.style.position = 'relative';
             }
@@ -708,11 +703,11 @@ local function prizeLib()
     function hasClass(el, cls) {
         return (' ' + el.className + ' ').indexOf(' ' + cls + ' ') !== -1;
     }
-    // A card already taken or shattered carries a caption and takes no part in the choice.
+    // A taken or shattered card carries a caption and is out of play.
     function done(card) {
         return !!card.querySelector('.open-case-inside__prize-caption');
     }
-    // The inner card is clicked so the event bubbles through the wrapper, wherever Svelte hung the handler.
+    // The inner card is clicked so the event bubbles to wherever the handler is.
     function hit(card) {
         (card.querySelector('.open-case-prize') || card).click();
     }
@@ -730,7 +725,7 @@ local function prizeLib()
     function fateScreen() {
         return !!(fateButton(TAKE) || fateButton(SHARD));
     }
-    // Selects every card still in play; once all of them are selected, clears the selection instead.
+    // Selects every card in play; if all are selected, clears instead.
     function toggleAll() {
         var list = cards(), live = [], allOn = true;
         for (var i = 0; i < list.length; i++) {
@@ -742,7 +737,7 @@ local function prizeLib()
             if (allOn || !hasClass(live[j], 'open-case-inside__prize--checked')) hit(live[j]);
         }
     }
-    // The hotkey sits inside the button caption: Svelte updates only its own text node, the span stays.
+    // Svelte updates only its own text node, so the span survives.
     function keyHint(needle, key) {
         var kit = key && fateButton(needle);
         var text = kit && kit.querySelector('.kit-button__text');
@@ -754,8 +749,7 @@ local function prizeLib()
             + 'border:1px solid currentColor;border-radius:4px;opacity:.75;font-size:.85em;';
         text.appendChild(span);
     }
-    // Falls back to a plain CSS badge if the CDN picture does not load.
-    // The picture is shrunk rather than stretched over the whole card: the digit stays in the corner, only smaller.
+    // A CSS badge replaces the picture if the CDN fails.
     function badges() {
         keyHint(TAKE, TAKE_KEY);
         keyHint(SHARD, SHARD_KEY);
@@ -786,7 +780,7 @@ local function prizeLib()
         jsKeyName(config.settings.take_key), jsKeyName(config.settings.shard_key), hintTexts())
 end
 
--- One key for all three screens. What to press is decided by the DOM rather than by our idea of the server state, so a mismatch in event order cannot make it miss.
+-- One key for all screens, decided by the DOM rather than by server state.
 local function pressActionButton()
     local js = ([[
 (function () {
@@ -822,8 +816,7 @@ local function pressActionButton()
     queueInject(js)
 end
 
--- A digit picks a card the way a click does: reveals a hidden one, toggles the selection on an open one.
--- Q and E press «Забрать» and «Расколоть» once, only when the button is live.
+-- A digit acts like a click on its card; Q and E press the fate buttons when live.
 local function pressPrizeKey(action, n)
     local js = ([[
 (function () {
@@ -842,7 +835,7 @@ local function pressPrizeKey(action, n)
     queueInject(js)
 end
 
--- Card numbers, key captions and hint lines live as long as the case window: Svelte redraws screens freely, so everything is checked again on every tick.
+-- Numbers, key captions and hints are re-checked every tick while the window is open: Svelte redraws freely.
 local function decorate()
     local js = ([[
 (function () {
@@ -880,7 +873,7 @@ local function flushPending()
     for _, prize in ipairs(pending.prizes) do
         local fate = prize.fate or 'take'
 
-        -- Everything lands in the common list, currencies included: the drop chance is meaningful for them too.
+        -- Currencies included: their drop chance matters too.
         local key = prizeKey(prize.item, prize.count or 0)
         local rec = bucket.prizes[key]
             or { item = prize.item, count = prize.count or 0,
@@ -956,7 +949,7 @@ local function setFate(indices, fate)
     markReadyIfComplete()
 end
 
--- Closing the window makes the server take everything left over by itself, with no outgoing packet.
+-- Closing the window makes the server take all leftovers, with no outgoing packet.
 local function autoTakeRemaining()
     if not pending then return end
     local changed = false
@@ -996,7 +989,7 @@ end
 -- Prize pool scan
 -- =========================================================================
 
--- The inject answers with one window.cef.SendMessage: it lands in onSendPacket, which swallows it so the server never sees it.
+-- The answer comes as one SendMessage, swallowed in onSendPacket.
 local SCAN_MSG = 'tmCaseScan|'
 local SCAN_MAX_BYTES = 30000 -- the outgoing string length is an Int16, so the answer stays below 32767.
 
@@ -1015,7 +1008,7 @@ local function scanJs(caseId)
         if (!m) continue;
         var r = (el.className.match(/open-case-prize--(\w+)/) || [])[1] || '';
         list.push([m[1], r, txt.textContent.replace(/\s+/g, ' ').trim()]);
-        // URI-encoded JSON: Cyrillic and separators become plain ASCII whatever encoding CEF uses for the packet.
+        // URI-encoded JSON stays plain ASCII whatever encoding CEF uses.
         var next = encodeURIComponent(JSON.stringify(list));
         if (HEAD.length + next.length > MAX) { list.pop(); break; }
         body = next;
@@ -1025,11 +1018,10 @@ local function scanJs(caseId)
 ]]):format(SCAN_MSG, caseId, SCAN_MAX_BYTES)
 end
 
--- Once per case type per session: no need to repeat the inject on every visit.
--- A case is marked only by its answer, so a lost answer simply means the next visit to the main screen scans again.
+-- Once per case type per session; marked only on an answer, so a lost answer rescans on the next visit.
 local scannedCases = {}
 
--- The inject waits for Svelte to draw the pool; it leaves from main(), so there are no coroutines here at all.
+-- Waits for Svelte to draw the pool; leaves from main().
 local scan = { at = nil, caseId = nil }
 
 local SCAN_MIN = 5 -- fewer means we hit the wrong screen, so the case stays unmarked.
@@ -1060,7 +1052,7 @@ local function onScanAnswer(body)
         if id and type(name) == 'string' and name ~= '' then
             rarity = (type(rarity) == 'string' and rarity ~= '') and rarity or nil
 
-            -- Every count is its own pool entry with its own rarity: «Монета x2» is purple, «Монета x1» is green. The count lives in the label, so pull it out.
+            -- Each count is its own pool entry with its own rarity; the count lives in the label.
             local bare, num = name:match('^(.-)%s*(%d+)%s*шт%.?$')
             local count = tonumber(num) or 1
 
@@ -1074,7 +1066,7 @@ local function onScanAnswer(body)
     itemsDeferred = false
     if found > 0 then saveItems() end
 
-    -- Even a partial scan is not junk: it honestly learns whatever cards are revealed.
+    -- A partial scan still learns the revealed cards.
     if found >= SCAN_MIN then
         scannedCases[caseId] = true
         logDebug(('case %d pool scanned: %d items'):format(caseId, found))
@@ -1090,7 +1082,7 @@ local function pumpScan()
     queueInject(scanJs(scan.caseId))
 end
 
--- The case main screen is the only place where the whole pool sits in the DOM, and Svelte finishes drawing the list with a delay, hence the pause.
+-- Svelte draws the pool with a delay, hence the pause.
 local function autoScan(caseId)
     if not caseId or caseId <= 0 or scannedCases[caseId] then return end
     requestScan(caseId, 0.8)
@@ -1100,7 +1092,7 @@ end
 -- Rendering helpers
 -- =========================================================================
 
--- Draws text twice: white on a bright CEF window is unreadable without a shadow.
+-- Text with a shadow: white is unreadable on a bright CEF window.
 local function shadowText(text, col)
     local p = imgui.GetCursorPos()
     imgui.SetCursorPos(imgui.ImVec2(p.x + 1, p.y + 1))
@@ -1117,7 +1109,7 @@ local function popSmall()
     if fontSmall then imgui.PopFont() end
 end
 
--- imgui.Text* and SetTooltip are printf-like, so a «%» in the data mangles the output. An item name can contain anything, so escape before showing it.
+-- imgui.Text* and SetTooltip are printf-like: escape every %.
 local function esc(str)
     return (tostring(str):gsub('%%', '%%%%'))
 end
@@ -1141,7 +1133,6 @@ local function renderOverlay()
 
     shadowText(esc(caseName(id)), COL_TEXT)
 
-    -- Glyphs rather than words: a cross reads clearer than any caption and asks for no room.
     local mark = collapsed and ' + ' or ' - '
     local right = imgui.GetWindowContentRegionMax().x
     local closeW = imgui.CalcTextSize(' x ').x + 14
@@ -1178,7 +1169,7 @@ local function renderOverlay()
         .. 'Но что делать с наградами, вы в любом случае\n'
         .. 'решаете вручную.')
 
-    -- Key hints live inside the case window itself, next to what they press.
+    -- Key hints live in the case window itself.
     imgui.Separator()
     imgui.Spacing()
     if imgui.Button('Что выпадало', imgui.ImVec2(-1, 0)) then
@@ -1285,7 +1276,7 @@ local function renderPrizeTable(stats)
         end
         imgui.NextColumn()
 
-        -- With several case types mixed the denominator is foreign: events of one case would be divided by openings of all. Showing nothing is more honest.
+        -- Mixed case types have no common denominator: no chance shown.
         if stats.caseCount > 1 then
             imgui.TextDisabled('-')
         else
@@ -1323,7 +1314,7 @@ local function renderWindow()
         return hit
     end
 
-    -- Cases are few and the list is stable while dates pile up without limit, so cases go on top and dates are what scrolls away.
+    -- Cases on top, dates scroll: dates grow without limit.
     if pick('Все кейсы', 'allcases', selectedCase == '') then
         selectedCase = ''
         viewRev = -1
@@ -1396,7 +1387,7 @@ imgui.OnFrame(function() return winOn[0] end, function(player)
 
     local flags = imgui.WindowFlags.NoCollapse
     if overlay then
-        -- The overlay does take the mouse: inside the case window there is nothing else to click but «ОТКРЫТЬ» in the centre, and the panel sits on the left without covering it.
+        -- The overlay takes the mouse; it does not cover «ОТКРЫТЬ».
         flags = flags
             + imgui.WindowFlags.NoTitleBar + imgui.WindowFlags.NoResize
             + imgui.WindowFlags.NoNav
@@ -1409,7 +1400,7 @@ imgui.OnFrame(function() return winOn[0] end, function(player)
 
     if overlay then
         w, h = s.ovl_w, 0
-        -- By default it lands on the «Похожие кейсы» list: with a backdrop that reads as a panel of its own and covers the least useful thing on screen. Fractions rather than pixels, because the launcher UI scales with the resolution.
+        -- Default spot is over «Похожие кейсы»; fractions because the UI scales with resolution.
         x = (s.ovl_x >= 0) and s.ovl_x or math.floor(sw * 0.035)
         y = (s.ovl_y >= 0) and s.ovl_y or math.floor(sh * 0.19)
     else
@@ -1426,7 +1417,7 @@ imgui.OnFrame(function() return winOn[0] end, function(player)
     end
     imgui.SetNextWindowPos(imgui.ImVec2(x, y), cond)
     if overlay then
-        -- Fixed width, zero height means fit to content: with a backdrop the spare room would turn into a visible empty rectangle.
+        -- Zero height fits the content: spare room would show as an empty backdrop.
         imgui.SetNextWindowSize(imgui.ImVec2(w, 0), imgui.Cond.Always)
         imgui.PushStyleColor(imgui.Col.WindowBg, COL_OVL_BG)
     else
@@ -1435,7 +1426,7 @@ imgui.OnFrame(function() return winOn[0] end, function(player)
 
     if imgui.Begin('Case Opener v' .. thisScript().version .. '##main', winOn, flags) then
         if overlay then
-            -- The panel is dragged by mouse; the position is written with a delay, otherwise every frame of a drag would hit the disk.
+            -- Position is saved with a delay so a drag does not write every frame.
             local pos = imgui.GetWindowPos()
             if math.abs(pos.x - s.ovl_x) > 1 or math.abs(pos.y - s.ovl_y) > 1 then
                 s.ovl_x, s.ovl_y = math.floor(pos.x), math.floor(pos.y)
@@ -1453,7 +1444,7 @@ imgui.OnFrame(function() return winOn[0] end, function(player)
     imgui.End()
     if overlay then imgui.PopStyleColor() end
 
-    -- The log was closed while the case window is still open: go back to the overlay rather than to nothing. The window cross, Esc and the button behave alike.
+    -- Closing the log inside a case returns to the overlay.
     if not overlay and not winOn[0] and inCase then
         winOn[0] = true
         windowMode[0] = false
@@ -1464,14 +1455,13 @@ end)
 local WM_KEYDOWN, WM_KEYUP = 0x100, 0x101
 local VK_ESCAPE = 0x1B
 
--- Esc closes the window mode. Handled through window messages rather than by polling the key, because only here the message can be hidden from the game - otherwise Esc would close
--- the window and open the pause menu at once. The overlay is not affected: it takes no input at all.
+-- Esc closes the window mode via window messages: only there it can be hidden from the game's pause menu.
 function onWindowMessage(msg, wparam, lparam)
     if not winOn[0] or not windowMode[0] then return end
     if wparam ~= VK_ESCAPE or (msg ~= WM_KEYDOWN and msg ~= WM_KEYUP) then return end
     if isPauseMenuActive() or sampIsChatInputActive() or sampIsDialogActive() then return end
 
-    -- Both messages are swallowed, the window closes on release: if imgui never sees the key go up it keeps believing Esc is held down.
+    -- Both messages are swallowed and the window closes on release, or imgui thinks Esc is still held.
     consumeWindowMessage(true, false)
     if msg == WM_KEYUP then
         winOn[0] = false
@@ -1536,7 +1526,7 @@ local function handleEvent(event, payload)
 
     if event == 'openCase.selectVideo' then
         if config.settings.auto_skip == 1 then skipVideo() end
-        -- It waits for its own moment: the cards screen shows up after the video.
+        -- The cards screen shows up after the video.
         if config.settings.auto_open_all == 1 then openAllCards() end
         return
     end
@@ -1548,7 +1538,7 @@ local function handleEvent(event, payload)
         local ok, args = pcall(decodeJson, payload)
         if ok and type(args) == 'table' and args[1] == 'main' and inCase then
             autoScan(caseInfo.id)
-            -- The screen returns to main only once the prizes are dealt with, so the loop paces itself: open, decide, open.
+            -- Main returns only after the prizes are dealt with, so auto-open paces itself.
             if config.settings.auto_open == 1 and not pending and caseInfo.count > 0 then
                 autoOpenAt = os.clock() + AUTO_OPEN_DELAY
             end
@@ -1624,7 +1614,7 @@ local function readOutgoing(bs)
     end
 end
 
--- Other scripts read packet 220 too: rewind before and after parsing, and keep a parse error from killing the script.
+-- Other scripts read packet 220 too: rewind before and after, and contain parse errors.
 function onReceivePacket(id, bs)
     if id ~= 220 or not bs then return end
     raknetBitStreamResetReadPointer(bs)
@@ -1654,7 +1644,7 @@ function sampev.onServerMessage(color, rawText)
     if name then takeShardName(name) end
 end
 
--- Skin bonus: the dialog arrives between openCase.open and initializeRewards, so the case is already known while the prizes are not drawn yet.
+-- The skin bonus dialog arrives between openCase.open and initializeRewards.
 function sampev.onShowDialog(dialogId, style, title, button1, button2, text)
     if not inCase then return end
 
@@ -1682,7 +1672,7 @@ function sampev.onShowDialog(dialogId, style, title, button1, button2, text)
         end
     end
 
-    -- An unknown bonus has no id to record, so it goes to the console until the item behind it is identified.
+    -- An unknown bonus has no id, so it is only logged.
     logRaw('незнакомый бонус, dialog id=' .. dialogId)
     logRaw(tostring(text))
 end
@@ -1890,10 +1880,9 @@ function main()
 
     loadAll()
 
-    -- Printed on every login, so it stays short and says the one thing nobody guesses: the script shows nothing until a case is opened.
     chat('Загружен {5CC9FF}v' .. thisScript().version .. '{FFFFFF}. Откройте кейс, панель появится сама. Что выпадало: {5CC9FF}/caselogs')
 
-    -- /caselogs always means «show me the window»: it opens from nothing, switches the overlay into the window, and only closes when already there.
+    -- /caselogs opens the window from anywhere and closes it only when already there.
     local function cmdLog()
         if winOn[0] and windowMode[0] then
             winOn[0] = false
@@ -1913,7 +1902,7 @@ function main()
     while true do
         wait(0)
 
-        -- The only place an inject leaves from: emulating an incoming packet inside a packet hook or a coroutine kills the script.
+        -- The only place injects leave from.
         while #injectQueue > 0 do
             evalcef(table.remove(injectQueue, 1))
         end
@@ -1928,7 +1917,7 @@ function main()
         local keysLive = not sampIsChatInputActive()
             and not sampIsDialogActive() and not isPauseMenuActive()
 
-        -- A fullscreen CEF window takes over control: the character ignores keys, so there is nothing to take away from the game. Disabled while the log window is up, where fields accept input.
+        -- Keys are free inside the fullscreen CEF window; off while the log window takes input.
         if keysLive and inCase and not windowMode[0] then
             if isKeyJustPressed(config.settings.action_key) then
                 pressActionButton()
@@ -1947,7 +1936,7 @@ function main()
             end
         end
 
-        -- Auto-opening spends cases, so the conditions are checked once more: during the pause the player could have left or switched it off.
+        -- Conditions are rechecked: the player could have left or switched it off during the pause.
         if autoOpenAt and os.clock() >= autoOpenAt then
             autoOpenAt = nil
             if inCase and config.settings.auto_open == 1 and not pending
