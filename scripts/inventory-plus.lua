@@ -1,6 +1,6 @@
 script_name('[TM] Inventory Plus')
 script_author('TheMY3')
-script_version('2.6.0')
+script_version('2.6.1')
 
 -- Тема на форуме (актуальная версия, обсуждение): https://www.blast.hk/threads/255785/
 
@@ -1023,7 +1023,7 @@ local namesFetching = false
 
 local function loadNamesFromDisk()
     local content = readFile(DICT_CACHE_PATH)
-    if not content then return nil end
+    if not content or content == '' then return nil end
     local ok, data = pcall(decodeJson, content)
     if ok and data and data.items then return data.items end
     return nil
@@ -1061,12 +1061,14 @@ local function fetchNamesDict(onDone)
         resolvePendingNames(nil)
     end)
 
+    -- Only the final status: progress statuses come first, and at STATUS_ENDDOWNLOADDATA the file may not be in place yet.
     local dl_status = moonloader.download_status
     downloadUrlToFile(DICT_URL, DICT_CACHE_PATH, function(_, status)
+        if status ~= dl_status.STATUSEX_ENDDOWNLOAD then return end
         if claimed then return end -- timeout already fired first
         claimed = true
         namesFetching = false
-        if status == dl_status.STATUS_ENDDOWNLOADDATA then namesCache = loadNamesFromDisk() end
+        namesCache = loadNamesFromDisk()
         resolvePendingNames(namesCache)
     end)
 end
@@ -1352,15 +1354,16 @@ local function downloadUpdate(entry)
             removeIfExists(tempPath)
             updateStatus('Обновление не удалось: таймаут скачивания. Скачайте вручную: {5CC9FF}' .. (entry.topic or ''))
         end)
+        -- Only the final status: at STATUS_ENDDOWNLOADDATA the file may not be in place yet.
         downloadUrlToFile(UPDATE_BASE_URL .. entry.path, tempPath, function(_, status)
-            if status == dl_status.STATUS_ENDDOWNLOADDATA then
-                if claim() then finishUpdate(entry, tempPath) end
-            elseif status == dl_status.STATUSEX_ENDDOWNLOAD then
-                if claim() then
-                    removeIfExists(tempPath)
-                    updateStatus('Не удалось скачать обновление. Скачайте вручную: {5CC9FF}' .. (entry.topic or ''))
-                end
+            if status ~= dl_status.STATUSEX_ENDDOWNLOAD or not claim() then return end
+            local content = readFile(tempPath)
+            if not content or content == '' then
+                removeIfExists(tempPath)
+                updateStatus('Не удалось скачать обновление. Скачайте вручную: {5CC9FF}' .. (entry.topic or ''))
+                return
             end
+            finishUpdate(entry, tempPath)
         end)
     end)
 end
@@ -1376,31 +1379,30 @@ local function fetchManifestEntry(onEntry, onError)
         onError('таймаут')
     end)
 
+    -- Only the final status: at STATUS_ENDDOWNLOADDATA the file may not be in place yet, and decodeJson('') is logged as an exception even under pcall.
     downloadUrlToFile(UPDATE_MANIFEST_URL, manifestPath, function(_, status)
-        if status == dl_status.STATUS_ENDDOWNLOADDATA then
-            if not claim() then return end
-            local content = readFile(manifestPath)
-            removeIfExists(manifestPath)
-            local ok, data = pcall(decodeJson, content or '')
-            if not ok or not data or not data.scripts then
-                onError('битый список версий')
-                return
-            end
-
-            local entry
-            for _, s in ipairs(data.scripts) do
-                if s.id == UPDATE_SCRIPT_ID then entry = s break end
-            end
-            if not entry then
-                onError('скрипт не найден в списке версий')
-                return
-            end
-            onEntry(entry)
-        elseif status == dl_status.STATUSEX_ENDDOWNLOAD then
-            if not claim() then return end
-            removeIfExists(manifestPath)
+        if status ~= dl_status.STATUSEX_ENDDOWNLOAD or not claim() then return end
+        local content = readFile(manifestPath)
+        removeIfExists(manifestPath)
+        if not content or content == '' then
             onError('нет соединения')
+            return
         end
+        local ok, data = pcall(decodeJson, content)
+        if not ok or not data or not data.scripts then
+            onError('битый список версий')
+            return
+        end
+
+        local entry
+        for _, s in ipairs(data.scripts) do
+            if s.id == UPDATE_SCRIPT_ID then entry = s break end
+        end
+        if not entry then
+            onError('скрипт не найден в списке версий')
+            return
+        end
+        onEntry(entry)
     end)
 end
 
