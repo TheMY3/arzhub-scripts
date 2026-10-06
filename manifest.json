@@ -192,7 +192,7 @@
       "name": "Case Opener",
       "filename": "[TheMY3] Case Opener.lua",
       "legacy_filenames": [],
-      "version": "1.9.3",
+      "version": "1.9.4",
       "path": "scripts/case-opener.lua",
       "topic": "",
       "actual": true,
@@ -223,6 +223,12 @@
           "version": "1.9.3",
           "notes": [
             "Тестовый выпуск: проверка уведомления об обновлении, изменений нет."
+          ]
+        },
+        {
+          "version": "1.9.4",
+          "notes": [
+            "Номер на карточке приза стал меньше - размером с галочку выбора."
           ]
         }
       ]

@@ -1,6 +1,6 @@
 script_name('Case Opener')
 script_author('TheMY3')
-script_version('1.9.3')
+script_version('1.9.4')
 
 
 local moonloader = require 'moonloader' -- download_status for self-update.
@@ -759,15 +759,17 @@ local function prizeLib()
             var img = document.createElement('img');
             img.className = 'tm-case-digit';
             img.src = DIGIT + (i + 1) + '.webp';
-            img.style.cssText = 'position:absolute;left:0;top:0;width:60%%;height:60%%;'
+            // Mirrors the selection check: plate 10%% of the card, 5%% from the corner (the plate sits 21/512 into the picture).
+            img.style.cssText = 'position:absolute;left:3.3%%;top:3.3%%;width:41%%;height:41%%;'
                 + 'pointer-events:none;z-index:5;';
             img.onerror = (function (n) {
                 return function () {
                     var div = document.createElement('div');
                     div.className = 'tm-case-digit';
                     div.textContent = String(n);
-                    div.style.cssText = 'position:absolute;left:5px;top:5px;padding:0 5px;font-size:12px;'
-                        + 'border-radius:5px;background:#00A8EC;color:#fff;font-weight:bold;'
+                    div.style.cssText = 'position:absolute;left:5%%;top:5%%;height:10%%;min-width:10%%;'
+                        + 'box-sizing:border-box;display:flex;align-items:center;justify-content:center;'
+                        + 'font-size:12px;border-radius:4px;background:#00A8EC;color:#fff;font-weight:bold;'
                         + 'pointer-events:none;z-index:5;';
                     if (this.parentNode) this.parentNode.replaceChild(div, this);
                 };
