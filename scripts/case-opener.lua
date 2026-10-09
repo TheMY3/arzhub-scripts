@@ -1,6 +1,8 @@
 script_name('Case Opener')
 script_author('TheMY3')
-script_version('1.9.7')
+script_version('2.0.0')
+
+-- Forum topic (current version, discussion): https://www.blast.hk/threads/257210/
 
 
 local moonloader = require 'moonloader' -- download_status for self-update.
@@ -1688,8 +1690,8 @@ local UPDATE_BASE_URL = 'https://raw.githubusercontent.com/TheMY3/arzhub-scripts
 local UPDATE_SCRIPT_ID = 'case-opener'
 local UPDATE_MANIFEST_TIMEOUT = 10 -- seconds.
 local UPDATE_FILE_TIMEOUT = 30 -- seconds, file is bigger than the manifest.
--- No forum topic yet: the manual fallback is the releases page.
-local UPDATE_RELEASES_URL = 'https://github.com/TheMY3/arzhub-scripts/releases'
+-- Manual fallback when the manifest carries no topic.
+local FORUM_URL = 'https://www.blast.hk/threads/257210/'
 
 -- "2.10.0" -> 2010000, so versions compare numerically.
 local function versionNum(v)
@@ -1735,7 +1737,7 @@ local function atomicReplace(targetPath, tempPath)
 end
 
 local function manualUrl(entry)
-    return (entry and entry.topic and entry.topic ~= '') and entry.topic or UPDATE_RELEASES_URL
+    return (entry and entry.topic and entry.topic ~= '') and entry.topic or FORUM_URL
 end
 
 -- Most failures pass on their own: GitHub caches files for about 5 minutes.
