@@ -1,6 +1,6 @@
 script_name('Case Opener')
 script_author('TheMY3')
-script_version('1.9.6')
+script_version('1.9.7')
 
 
 local moonloader = require 'moonloader' -- download_status for self-update.

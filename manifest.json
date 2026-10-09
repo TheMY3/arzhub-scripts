@@ -192,7 +192,7 @@
       "name": "Case Opener",
       "filename": "[TheMY3] Case Opener.lua",
       "legacy_filenames": [],
-      "version": "1.9.6",
+      "version": "1.9.7",
       "path": "scripts/case-opener.lua",
       "topic": "",
       "actual": true,
@@ -241,6 +241,12 @@
           "version": "1.9.6",
           "notes": [
             "Надёжнее перезапуск после обновления: больше не перезапускается дважды вместе с ML-AutoReboot."
+          ]
+        },
+        {
+          "version": "1.9.7",
+          "notes": [
+            "Тестовый выпуск: проверка перезапуска после обновления, изменений нет."
           ]
         }
       ]
