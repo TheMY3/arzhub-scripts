@@ -76,7 +76,7 @@
       "name": "Crypto Collector",
       "filename": "[TheMY3] Crypto Collector.lua",
       "legacy_filenames": [],
-      "version": "2.5.1",
+      "version": "2.5.2",
       "path": "scripts/crypto-collector.lua",
       "topic": "https://www.blast.hk/threads/243868/",
       "actual": true,
@@ -92,6 +92,13 @@
           "version": "2.5.1",
           "notes": [
             "Исправлена проверка обновлений: при входе в игру скрипт мог не сообщить о новой версии."
+          ]
+        },
+        {
+          "version": "2.5.2",
+          "notes": [
+            "Понятнее сообщения при неудачном обновлении: что случилось и когда повторить.",
+            "Надёжнее перезапуск после обновления: больше не перезапускается дважды вместе с ML-AutoReboot."
           ]
         }
       ]

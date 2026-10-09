@@ -1,6 +1,6 @@
 script_author('TheMY3')
 script_name('[TM] Crypto Collector')
-script_version('2.5.1')
+script_version('2.5.2')
 
 -- Тема на форуме (актуальная версия, обсуждение): https://www.blast.hk/threads/243868/
 
@@ -1522,39 +1522,63 @@ local function atomicReplace(targetPath, tempPath)
 	return true
 end
 
+local function manualUrl(entry)
+	return (entry and entry.topic and entry.topic ~= '') and entry.topic or FORUM_URL
+end
+
+-- Most failures pass on their own: GitHub caches files for about 5 minutes.
+local UPDATE_RETRY = ', повторите через пару минут или скачайте вручную: {5CC9FF}'
+local UPDATE_FAIL_TEXT = {
+	timeout = 'Сервер не ответил' .. UPDATE_RETRY,
+	empty = 'Файл не скачался' .. UPDATE_RETRY,
+	broken = 'Пришёл битый файл' .. UPDATE_RETRY,
+	missing = 'Скрипта нет в списке версий, скачайте вручную: {5CC9FF}',
+	replace = 'Файл не заменился, старая версия на месте. Скачайте вручную: {5CC9FF}',
+}
+
+local function updateFailed(kind, entry)
+	updateStatus(UPDATE_FAIL_TEXT[kind] .. manualUrl(entry))
+end
+
+-- Set when the new file is in place; main() reloads on its next tick, so no thread of ours is left mid-call.
+local reloadPending = false
+
 local function finishUpdate(entry, tempPath)
 	local content = readFile(tempPath)
 	local gotVersion = content and content:match("script_version%(['\"]([%d%.]+)['\"]%)")
 
 	if not gotVersion then
 		removeIfExists(tempPath)
-		updateStatus('Обновление не удалось: скачанный файл не похож на скрипт. Скачайте вручную: {5CC9FF}' .. (entry.topic or FORUM_URL))
+		updateFailed('broken', entry)
 		return
 	end
 	if gotVersion == thisScript().version then
 		-- Manifest already points at the new version but the raw.githubusercontent.com CDN edge is still serving the previous file - a stale-cache race, not a real failure.
 		removeIfExists(tempPath)
-		updateStatus('CDN ещё отдаёт старую версию, попробуйте через пару минут: {5CC9FF}/crupdate')
+		updateStatus('Сервер ещё отдаёт старую версию, повторите через пару минут.')
 		return
 	end
 	if gotVersion ~= entry.version then
 		removeIfExists(tempPath)
-		updateStatus('Обновление не удалось: версия в файле (' .. gotVersion .. ') не совпадает с манифестом (' .. entry.version .. ').')
+		-- The file and the manifest are cached separately, so this is the CDN too.
+		updateStatus('Сервер отдал v' .. gotVersion .. ' вместо v' .. entry.version .. ', повторите через пару минут.')
 		return
 	end
 
 	local ok, err = atomicReplace(thisScript().path, tempPath)
 	if not ok then
 		removeIfExists(tempPath)
-		updateStatus('Обновление не удалось: ' .. err .. '. Скачайте вручную: {5CC9FF}' .. (entry.topic or FORUM_URL))
+		updateFailed('replace', entry)
 		return
 	end
 
+	-- ML-AutoReboot reloads a changed file by itself; a reload of ours on top kills the fresh copy mid-start.
+	if script.find('ML-AutoReboot') then
+		updateStatus('Обновлено до {5CC9FF}v' .. entry.version .. '{FFFFFF}, скрипт перезагрузится сам.')
+		return
+	end
 	updateStatus('Обновлено до {5CC9FF}v' .. entry.version .. '{FFFFFF}, перезагружаю скрипт...')
-	lua_thread.create(function()
-		wait(300)
-		thisScript():reload()
-	end)
+	reloadPending = true
 end
 
 local function downloadUpdate(entry)
@@ -1567,7 +1591,7 @@ local function downloadUpdate(entry)
 		local dl_status = moonloader.download_status
 		local claim = withTimeout(UPDATE_FILE_TIMEOUT, function()
 			removeIfExists(tempPath)
-			updateStatus('Обновление не удалось: таймаут скачивания. Скачайте вручную: {5CC9FF}' .. (entry.topic or FORUM_URL))
+			updateFailed('timeout', entry)
 		end)
 		-- Only the final status: at STATUS_ENDDOWNLOADDATA the file may not be in place yet.
 		downloadUrlToFile(UPDATE_BASE_URL .. entry.path, tempPath, function(_, status)
@@ -1575,7 +1599,7 @@ local function downloadUpdate(entry)
 			local content = readFile(tempPath)
 			if not content or content == '' then
 				removeIfExists(tempPath)
-				updateStatus('Не удалось скачать обновление. Скачайте вручную: {5CC9FF}' .. (entry.topic or FORUM_URL))
+				updateFailed('empty', entry)
 				return
 			end
 			finishUpdate(entry, tempPath)
@@ -1590,7 +1614,7 @@ local function fetchManifestEntry(onEntry, onError)
 	local dl_status = moonloader.download_status
 	local claim = withTimeout(UPDATE_MANIFEST_TIMEOUT, function()
 		removeIfExists(manifestPath)
-		onError('таймаут')
+		onError('timeout')
 	end)
 
 	-- Only the final status: at STATUS_ENDDOWNLOADDATA the file may not be in place yet, and decodeJson('') is logged as an exception even under pcall.
@@ -1599,12 +1623,12 @@ local function fetchManifestEntry(onEntry, onError)
 		local content = readFile(manifestPath)
 		removeIfExists(manifestPath)
 		if not content or content == '' then
-			onError('нет соединения')
+			onError('empty')
 			return
 		end
 		local ok, data = pcall(decodeJson, content)
 		if not ok or not data or not data.scripts then
-			onError('битый список версий')
+			onError('broken')
 			return
 		end
 
@@ -1613,7 +1637,7 @@ local function fetchManifestEntry(onEntry, onError)
 			if s.id == UPDATE_SCRIPT_ID then entry = s break end
 		end
 		if not entry then
-			onError('скрипт не найден в списке версий')
+			onError('missing')
 			return
 		end
 		onEntry(entry)
@@ -1633,8 +1657,8 @@ local function checkForUpdate()
 			updateStatus('Найдено обновление: v' .. entry.version .. '. Скачиваю...')
 			downloadUpdate(entry)
 		end,
-		function(reason)
-			updateStatus('Не удалось проверить обновления (' .. reason .. ').')
+		function(kind)
+			updateFailed(kind)
 		end
 	)
 end
@@ -1683,6 +1707,11 @@ function main()
 	checkForUpdateSilently()
 	while true do
 		wait(100)
+		if reloadPending then
+			reloadPending = false
+			thisScript():reload()
+			return
+		end
 		-- Anything logged from here on runs on the main tick, not inside a RakNet callback.
 		debugCtx = 'main'
 		-- Handle the dialog delay.
