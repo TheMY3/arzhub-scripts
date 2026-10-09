@@ -294,6 +294,27 @@
           ]
         }
       ]
+    },
+    {
+      "id": "dialog-plus",
+      "name": "Dialog Plus",
+      "filename": "[TheMY3] Dialog Plus.lua",
+      "legacy_filenames": [],
+      "version": "1.2.0",
+      "path": "scripts/dialog-plus.lua",
+      "topic": "https://www.blast.hk/threads/256216/",
+      "actual": true,
+      "changelog": [
+        {
+          "version": "1.2.0",
+          "notes": [
+            "Убран двойной клик мышью: иногда он закрывал диалог, когда этого не хотели. Подтвердить и закрыть диалог можно клавишами Enter и Esc.",
+            "Номера пунктов появляются сразу при открытии меню.",
+            "Мелкие исправления и доработки.",
+            "Скрипт сам сообщает о новой версии при входе в игру, обновиться можно командой /dpupdate."
+          ]
+        }
+      ]
     }
   ]
 }
