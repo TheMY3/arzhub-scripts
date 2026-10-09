@@ -1,6 +1,6 @@
 script_name('BattlePass Helper')
 script_author('TheMY3')
-script_version('1.2.1')
+script_version('1.2.2')
 
 -- Тема на форуме (актуальная версия, обсуждение): https://www.blast.hk/threads/257000/
 
@@ -22,7 +22,7 @@ local new = imgui.new
 -- Constants
 -- =========================================================================
 
-local TAG = '{FFD700}[TM] BattlePass Helper{FFFFFF}: '
+local TAG = '{FFA500}[TM] BattlePass Helper{FFFFFF}: '
 local FORUM_URL = 'https://www.blast.hk/threads/257000/'  -- Manual fallback when self-update fails.
 local API_URL = 'https://server-api.arizona.games/client/json/table/get?project=arizona&server=1&key=bp_mission_default'
 
@@ -1088,39 +1088,63 @@ local function atomicReplace(targetPath, tempPath)
     return true
 end
 
+local function manualUrl(entry)
+    return (entry and entry.topic and entry.topic ~= '') and entry.topic or FORUM_URL
+end
+
+-- Most failures pass on their own: GitHub caches files for about 5 minutes.
+local UPDATE_RETRY = ', повторите через пару минут или скачайте вручную: {5CC9FF}'
+local UPDATE_FAIL_TEXT = {
+    timeout = 'Сервер не ответил' .. UPDATE_RETRY,
+    empty = 'Файл не скачался' .. UPDATE_RETRY,
+    broken = 'Пришёл битый файл' .. UPDATE_RETRY,
+    missing = 'Скрипта нет в списке версий, скачайте вручную: {5CC9FF}',
+    replace = 'Файл не заменился, старая версия на месте. Скачайте вручную: {5CC9FF}',
+}
+
+local function updateFailed(kind, entry)
+    chat(UPDATE_FAIL_TEXT[kind] .. manualUrl(entry))
+end
+
+-- Set when the new file is in place; main() reloads on its next tick, so no thread of ours is left mid-call.
+local reloadPending = false
+
 local function finishUpdate(entry, tempPath)
     local content = readFile(tempPath)
     local gotVersion = content and content:match("script_version%(['\"]([%d%.]+)['\"]%)")
 
     if not gotVersion then
         removeIfExists(tempPath)
-        chat('Обновление не удалось: скачанный файл не похож на скрипт. Скачайте вручную: {5CC9FF}' .. (entry.topic or FORUM_URL))
+        updateFailed('broken', entry)
         return
     end
     if gotVersion == thisScript().version then
         -- Manifest already points at the new version but the raw.githubusercontent.com CDN edge is still serving the previous file - a stale-cache race, not a real failure.
         removeIfExists(tempPath)
-        chat('CDN ещё отдаёт старую версию, попробуйте через пару минут: {5CC9FF}/bpupdate')
+        chat('Сервер ещё отдаёт старую версию, повторите через пару минут.')
         return
     end
     if gotVersion ~= entry.version then
         removeIfExists(tempPath)
-        chat('Обновление не удалось: версия в файле (' .. gotVersion .. ') не совпадает с манифестом (' .. entry.version .. ').')
+        -- The file and the manifest are cached separately, so this is the CDN too.
+        chat('Сервер отдал v' .. gotVersion .. ' вместо v' .. entry.version .. ', повторите через пару минут.')
         return
     end
 
     local ok, err = atomicReplace(thisScript().path, tempPath)
     if not ok then
         removeIfExists(tempPath)
-        chat('Обновление не удалось: ' .. err .. '. Скачайте вручную: {5CC9FF}' .. (entry.topic or FORUM_URL))
+        updateFailed('replace', entry)
         return
     end
 
+    -- ML-AutoReboot reloads a changed file by itself; a reload of ours on top kills the fresh copy mid-start.
+    if script.find('ML-AutoReboot') then
+        chat('Обновлено до {5CC9FF}v' .. entry.version .. '{FFFFFF}, скрипт перезагрузится сам.')
+        return
+    end
     chat('Обновлено до {5CC9FF}v' .. entry.version .. '{FFFFFF}, перезагружаю скрипт...')
-    lua_thread.create(function()
-        wait(300)
-        thisScript():reload()
-    end)
+    reloadPending = true
 end
 
 local function downloadUpdate(entry)
@@ -1133,7 +1157,7 @@ local function downloadUpdate(entry)
         local dl_status = moonloader.download_status
         local claim = withTimeout(UPDATE_FILE_TIMEOUT, function()
             removeIfExists(tempPath)
-            chat('Обновление не удалось: таймаут скачивания. Скачайте вручную: {5CC9FF}' .. (entry.topic or FORUM_URL))
+            updateFailed('timeout', entry)
         end)
         -- Only the final status: at STATUS_ENDDOWNLOADDATA the file may not be in place yet.
         downloadUrlToFile(UPDATE_BASE_URL .. entry.path, tempPath, function(_, status)
@@ -1141,7 +1165,7 @@ local function downloadUpdate(entry)
             local content = readFile(tempPath)
             if not content or content == '' then
                 removeIfExists(tempPath)
-                chat('Не удалось скачать обновление. Скачайте вручную: {5CC9FF}' .. (entry.topic or FORUM_URL))
+                updateFailed('empty', entry)
                 return
             end
             finishUpdate(entry, tempPath)
@@ -1156,7 +1180,7 @@ local function fetchManifestEntry(onEntry, onError)
     local dl_status = moonloader.download_status
     local claim = withTimeout(UPDATE_MANIFEST_TIMEOUT, function()
         removeIfExists(manifestPath)
-        onError('таймаут')
+        onError('timeout')
     end)
 
     -- Only the final status: at STATUS_ENDDOWNLOADDATA the file may not be in place yet, and decodeJson('') is logged as an exception even under pcall.
@@ -1165,12 +1189,12 @@ local function fetchManifestEntry(onEntry, onError)
         local content = readFile(manifestPath)
         removeIfExists(manifestPath)
         if not content or content == '' then
-            onError('нет соединения')
+            onError('empty')
             return
         end
         local ok, data = pcall(decodeJson, content)
         if not ok or not data or not data.scripts then
-            onError('битый список версий')
+            onError('broken')
             return
         end
 
@@ -1179,7 +1203,7 @@ local function fetchManifestEntry(onEntry, onError)
             if item.id == UPDATE_SCRIPT_ID then entry = item break end
         end
         if not entry then
-            onError('скрипт не найден в списке версий')
+            onError('missing')
             return
         end
         onEntry(entry)
@@ -1199,8 +1223,8 @@ local function checkForUpdate()
             chat('Найдено обновление: v' .. entry.version .. '. Скачиваю...')
             downloadUpdate(entry)
         end,
-        function(reason)
-            chat('Не удалось проверить обновления (' .. reason .. ').')
+        function(kind)
+            updateFailed(kind)
         end
     )
 end
@@ -1234,7 +1258,7 @@ function main()
     chat('Загружен {5CC9FF}v' .. thisScript().version .. '{FFFFFF}. Список: {5CC9FF}/bp'
         .. '{FFFFFF}. Режим: {5CC9FF}' .. keyLabel(config.settings.toggle_key)
         .. '{FFFFFF}. Обновить: {5CC9FF}' .. keyLabel(config.settings.refresh_key)
-        .. '{FFFFFF}. Каталог: {5CC9FF}/bpload{FFFFFF}. Новая версия: {5CC9FF}/bpupdate')
+        .. '{FFFFFF}. Каталог: {5CC9FF}/bpload')
 
     -- Catalog first: without it a snapshot has nothing to join against.
     if not loadCatalogFromDisk() then
@@ -1272,6 +1296,11 @@ function main()
 
     while true do
         wait(0)
+        if reloadPending then
+            reloadPending = false
+            thisScript():reload()
+            return
+        end
 
         -- A press already spent on a binding stays swallowed until the key is physically released, otherwise it fires the hotkey it just became.
         if bindHeld and not isKeyDown(bindHeld) then bindHeld = nil end

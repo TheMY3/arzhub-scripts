@@ -182,7 +182,7 @@
       "name": "BattlePass Helper",
       "filename": "[TheMY3] BattlePass Helper.lua",
       "legacy_filenames": [],
-      "version": "1.2.1",
+      "version": "1.2.2",
       "path": "scripts/battlepass-helper.lua",
       "topic": "https://www.blast.hk/threads/257000/",
       "actual": true,
@@ -198,6 +198,13 @@
           "version": "1.2.1",
           "notes": [
             "Исправлена проверка обновлений: при входе в игру скрипт мог не сообщить о новой версии."
+          ]
+        },
+        {
+          "version": "1.2.2",
+          "notes": [
+            "Понятнее сообщения при неудачном обновлении: что случилось и когда повторить.",
+            "Надёжнее перезапуск после обновления: больше не перезапускается дважды вместе с ML-AutoReboot."
           ]
         }
       ]
