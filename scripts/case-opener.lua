@@ -1,6 +1,6 @@
 script_name('Case Opener')
 script_author('TheMY3')
-script_version('1.9.5')
+script_version('1.9.6')
 
 
 local moonloader = require 'moonloader' -- download_status for self-update.
@@ -1752,6 +1752,9 @@ local function updateFailed(kind, entry)
     chat(UPDATE_FAIL_TEXT[kind] .. manualUrl(entry))
 end
 
+-- Set when the new file is in place; main() reloads on its next tick, so no thread of ours is left mid-call.
+local reloadPending = false
+
 local function finishUpdate(entry, tempPath)
     local content = readFile(tempPath)
     local gotVersion = content and content:match("script_version%(['\"]([%d%.]+)['\"]%)")
@@ -1782,11 +1785,13 @@ local function finishUpdate(entry, tempPath)
         return
     end
 
+    -- ML-AutoReboot reloads a changed file by itself; a reload of ours on top kills the fresh copy mid-start.
+    if script.find('ML-AutoReboot') then
+        chat('Обновлено до {5CC9FF}v' .. entry.version .. '{FFFFFF}, скрипт перезагрузится сам.')
+        return
+    end
     chat('Обновлено до {5CC9FF}v' .. entry.version .. '{FFFFFF}, перезагружаю скрипт...')
-    lua_thread.create(function()
-        wait(300)
-        thisScript():reload()
-    end)
+    reloadPending = true
 end
 
 local function downloadUpdate(entry)
@@ -1919,6 +1924,12 @@ function main()
 
     while true do
         wait(0)
+
+        if reloadPending then
+            reloadPending = false
+            thisScript():reload()
+            return
+        end
 
         -- The only place injects leave from.
         while #injectQueue > 0 do
