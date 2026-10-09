@@ -192,7 +192,7 @@
       "name": "Case Opener",
       "filename": "[TheMY3] Case Opener.lua",
       "legacy_filenames": [],
-      "version": "1.9.4",
+      "version": "1.9.5",
       "path": "scripts/case-opener.lua",
       "topic": "",
       "actual": true,
@@ -229,6 +229,12 @@
           "version": "1.9.4",
           "notes": [
             "Номер на карточке приза стал меньше - размером с галочку выбора."
+          ]
+        },
+        {
+          "version": "1.9.5",
+          "notes": [
+            "Понятнее сообщения при неудачном обновлении: что случилось и когда повторить."
           ]
         }
       ]

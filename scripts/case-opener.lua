@@ -1,6 +1,6 @@
 script_name('Case Opener')
 script_author('TheMY3')
-script_version('1.9.4')
+script_version('1.9.5')
 
 
 local moonloader = require 'moonloader' -- download_status for self-update.
@@ -1738,31 +1738,47 @@ local function manualUrl(entry)
     return (entry and entry.topic and entry.topic ~= '') and entry.topic or UPDATE_RELEASES_URL
 end
 
+-- Most failures pass on their own: GitHub caches files for about 5 minutes.
+local UPDATE_RETRY = ', повторите через пару минут или скачайте вручную: {5CC9FF}'
+local UPDATE_FAIL_TEXT = {
+    timeout = 'Сервер не ответил' .. UPDATE_RETRY,
+    empty = 'Файл не скачался' .. UPDATE_RETRY,
+    broken = 'Пришёл битый файл' .. UPDATE_RETRY,
+    missing = 'Скрипта нет в списке версий, скачайте вручную: {5CC9FF}',
+    replace = 'Файл не заменился, старая версия на месте. Скачайте вручную: {5CC9FF}',
+}
+
+local function updateFailed(kind, entry)
+    chat(UPDATE_FAIL_TEXT[kind] .. manualUrl(entry))
+end
+
 local function finishUpdate(entry, tempPath)
     local content = readFile(tempPath)
     local gotVersion = content and content:match("script_version%(['\"]([%d%.]+)['\"]%)")
 
     if not gotVersion then
         removeIfExists(tempPath)
-        chat('Обновление не удалось: скачанный файл не похож на скрипт. Скачайте вручную: {5CC9FF}' .. manualUrl(entry))
+        updateFailed('broken', entry)
         return
     end
     if gotVersion == thisScript().version then
         -- The CDN still serves the previous file right after a release.
         removeIfExists(tempPath)
-        chat('CDN ещё отдаёт старую версию, попробуйте через пару минут: {5CC9FF}/coupdate')
+        chat('Сервер ещё отдаёт старую версию, повторите через пару минут.')
         return
     end
     if gotVersion ~= entry.version then
         removeIfExists(tempPath)
-        chat('Обновление не удалось: версия в файле (' .. gotVersion .. ') не совпадает с манифестом (' .. entry.version .. ').')
+        -- The file and the manifest are cached separately, so this is the CDN too.
+        chat('Сервер отдал v' .. gotVersion .. ' вместо v' .. entry.version .. ', повторите через пару минут.')
         return
     end
 
     local ok, err = atomicReplace(thisScript().path, tempPath)
     if not ok then
         removeIfExists(tempPath)
-        chat('Обновление не удалось: ' .. err .. '. Скачайте вручную: {5CC9FF}' .. manualUrl(entry))
+        logDebug('update: ' .. err)
+        updateFailed('replace', entry)
         return
     end
 
@@ -1782,7 +1798,7 @@ local function downloadUpdate(entry)
         local dl_status = moonloader.download_status
         local claim = withTimeout(UPDATE_FILE_TIMEOUT, function()
             removeIfExists(tempPath)
-            chat('Обновление не удалось: таймаут скачивания. Скачайте вручную: {5CC9FF}' .. manualUrl(entry))
+            updateFailed('timeout', entry)
         end)
         -- Only the final status: at STATUS_ENDDOWNLOADDATA the file may not be in place yet.
         downloadUrlToFile(UPDATE_BASE_URL .. entry.path, tempPath, function(_, status)
@@ -1790,7 +1806,7 @@ local function downloadUpdate(entry)
             local content = readFile(tempPath)
             if not content or content == '' then
                 removeIfExists(tempPath)
-                chat('Не удалось скачать обновление. Скачайте вручную: {5CC9FF}' .. manualUrl(entry))
+                updateFailed('empty', entry)
                 return
             end
             finishUpdate(entry, tempPath)
@@ -1798,14 +1814,14 @@ local function downloadUpdate(entry)
     end)
 end
 
--- Exactly one of onEntry(entry) / onError(why) fires.
+-- Exactly one of onEntry(entry) / onError(kind) fires, kind being a key of UPDATE_FAIL_TEXT.
 local function fetchManifestEntry(onEntry, onError)
     local manifestPath = thisScript().path .. '.manifest.tmp'
     removeIfExists(manifestPath)
     local dl_status = moonloader.download_status
     local claim = withTimeout(UPDATE_MANIFEST_TIMEOUT, function()
         removeIfExists(manifestPath)
-        onError('таймаут')
+        onError('timeout')
     end)
 
     -- Only the final status: at STATUS_ENDDOWNLOADDATA the file may not be in place yet, and decodeJson('') is logged as an exception even under pcall.
@@ -1814,12 +1830,12 @@ local function fetchManifestEntry(onEntry, onError)
         local content = readFile(manifestPath)
         removeIfExists(manifestPath)
         if not content or content == '' then
-            onError('нет соединения')
+            onError('empty')
             return
         end
         local ok, data = pcall(decodeJson, content)
         if not ok or type(data) ~= 'table' or not data.scripts then
-            onError('битый список версий')
+            onError('broken')
             return
         end
 
@@ -1828,7 +1844,7 @@ local function fetchManifestEntry(onEntry, onError)
             if item.id == UPDATE_SCRIPT_ID then entry = item break end
         end
         if not entry then
-            onError('скрипт не найден в списке версий')
+            onError('missing')
             return
         end
         onEntry(entry)
@@ -1852,8 +1868,8 @@ local function checkForUpdate()
             chat('Найдено обновление: v' .. entry.version .. '. Скачиваю...')
             downloadUpdate(entry)
         end,
-        function(reason)
-            chat('Не удалось проверить обновления (' .. reason .. '). Скачать вручную: {5CC9FF}' .. manualUrl())
+        function(kind)
+            updateFailed(kind)
         end
     )
 end
