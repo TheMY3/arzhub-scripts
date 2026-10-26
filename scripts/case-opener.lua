@@ -1,6 +1,6 @@
 script_name('Case Opener')
 script_author('TheMY3')
-script_version('2.0.0')
+script_version('2.1.0')
 
 -- Forum topic (current version, discussion): https://www.blast.hk/threads/257210/
 
@@ -34,7 +34,7 @@ local ITEMS_PATH = CFG_DIR .. '\\items.json'
 -- Shards and money arrive as ordinary prizes but are counted differently.
 local ITEM_SHARDS = 9294
 
--- For money and AZ coins `count` is an amount; the pool shows them under a variant id (id * 10000 + variant), so labels are built here.
+-- For money and AZ coins `count` is an amount; the pool shows them under their own id or a variant one (id * 10000 + variant), so labels are built here.
 local CURRENCY_LABEL = {
     [731] = function(n) return n .. ' AZ-коинов' end,
     -- The card separates thousands with dots, not spaces.
@@ -62,13 +62,10 @@ local CASE_NAMES = {
 
 -- Prizes credited by a SAMP dialog instead of a card (skin bonus), keyed by a fragment of the dialog text.
 local DIALOG_BONUSES = {
-    { find = 'Монету Новой Мафии', item = 10098, count = 1,
-      name = 'Монета Новой Мафии (Вечная)', rarity = 'gold' },
+    { find = 'Монету Новой Мафии', item = 10098, count = 1, name = 'Монета Новой Мафии (Вечная)', rarity = 'gold' },
 }
 
--- Either marker is enough: one sample does not tell which one is stable.
-local BONUS_TITLE = 'УРА! УРА!' -- the occasion
-local BONUS_MARK = 'Предмет уже у вас в инвентаре' -- the substance: nothing to choose
+local BONUS_TITLE = 'УРА! УРА!'
 
 local SKIP_TRIES = 12 -- how many times the injected script looks for the skip button.
 local SKIP_STEP = 150 -- ms between those attempts.
@@ -109,8 +106,23 @@ local inCase = false
 local autoOpenAt = nil -- when we press «ОТКРЫТЬ» ourselves.
 
 local AUTO_OPEN_DELAY = 0.6 -- pause before auto-opening, long enough to leave with Esc.
+local AUTO_SORT_DELAY = 1.0 -- pause before sorting prizes by the rules, past the video and its skip.
+local AUTO_SORT_ACK = 2.5 -- longest wait for the shard notify before «save» goes anyway.
+
+-- Prize sorting by the rules: what goes where and when; packets leave only from main().
+local autoSort = nil -- {at, shard = {indices}, take = {indices}, ackBy, notified}
+-- An auto-mode run: lives from «Старт» until its summary.
+local run = nil -- {active, done, taken, sharded, shards, bonus = {name -> count}}; the goal is runTarget, live.
+local runTarget = new.int(0) -- how many to open, 0 means until the cases run out.
+local finishAt = nil -- the summary waits for the last opening to be written down.
+local RUN_FINISH_DELAY = 0.5 -- lets trailing informers of the last opening land first.
+local lastRun = nil -- summary of the finished run, shown in the panel until the next start.
+local typing = false -- an input field has the keyboard, so the case hotkeys stay quiet.
 
 local winOn = new.bool(false)
+local rulesMode = false -- the window shows the rules instead of the drop log.
+local rulesCase = nil -- case key whose pool is on the rules screen.
+local rulesFilter = 'all' -- rules screen status filter: all, none, take, shard.
 local windowMode = new.bool(false) -- false = overlay, true = window.
 
 -- Setting checkboxes: imgui wants a bool reference, inicfg stores 0/1.
@@ -140,7 +152,8 @@ local config = inicfg.load({
         action_key = 32, -- space: presses whatever fits the current case screen.
         take_key = 81, -- Q: «Забрать» on the reward screen, 0 turns it off.
         shard_key = 69, -- E: «Расколоть» on the reward screen, 0 turns it off.
-        auto_open = 0, -- presses «ОТКРЫТЬ» by itself. Spends cases, hence off by default.
+        auto_mode = 0, -- 0 = manual, 1 = auto: opens N cases and sorts the prizes by the rules.
+        auto_open = 0, -- manual mode: presses «ОТКРЫТЬ» by itself until the cases run out.
         ovl_collapsed = 0,
         win_x = -1, win_y = -1,
         win_w = 900, win_h = 520,
@@ -154,6 +167,7 @@ config.settings.auto_open_all = tonumber(config.settings.auto_open_all) or 1
 config.settings.action_key = tonumber(config.settings.action_key) or 32
 config.settings.take_key = tonumber(config.settings.take_key) or 81
 config.settings.shard_key = tonumber(config.settings.shard_key) or 69
+config.settings.auto_mode = tonumber(config.settings.auto_mode) or 0
 config.settings.auto_open = tonumber(config.settings.auto_open) or 0
 config.settings.ovl_collapsed = tonumber(config.settings.ovl_collapsed) or 0
 
@@ -536,6 +550,18 @@ local function evalcef(js)
     return true
 end
 
+-- Outgoing CEF event (sub-type 18), exactly what the window's own buttons send.
+local function sendCef(str)
+    local bs = raknetNewBitStream()
+    raknetBitStreamWriteInt8(bs, 220)
+    raknetBitStreamWriteInt8(bs, 18)
+    raknetBitStreamWriteInt16(bs, #str)
+    raknetBitStreamWriteString(bs, str)
+    raknetBitStreamWriteInt32(bs, 0)
+    raknetSendBitStream(bs)
+    raknetDeleteBitStream(bs)
+end
+
 -- The skip button mounts late: retry, then fast-forward the video.
 local function skipVideo()
     local js = ([[
@@ -615,6 +641,15 @@ local function jsText(str)
         i = i + len
     end
     return table.concat(out)
+end
+
+-- Arizona's own toast (event.notify.initialize), raised locally: the chat is hidden behind the case window.
+local TOAST_TITLE = 'Case Opener'
+
+local function toast(kind, text, ms)
+    local function q(str) return '"' .. str:gsub('\\', '\\\\'):gsub('"', '\\"') .. '"' end
+    local args = '[' .. q(kind) .. ',' .. q(TOAST_TITLE) .. ',' .. q(text) .. ',' .. (ms or 4000) .. ']'
+    queueInject("window.executeEvent('event.notify.initialize', '" .. jsText(args) .. "');")
 end
 
 -- Key hint lines for every case screen.
@@ -891,6 +926,15 @@ local function flushPending()
             rec.taken = rec.taken + 1
         end
 
+        if run then
+            if fate == 'shard' then
+                run.sharded = run.sharded + 1
+                run.shards = run.shards + (prize.shards or 0)
+            else
+                run.taken = run.taken + 1
+            end
+        end
+
         bucket.prizes[key] = rec
 
     end
@@ -964,6 +1008,139 @@ local function autoTakeRemaining()
         end
     end
     if changed then markReadyIfComplete() end
+end
+
+-- The pool shows a currency under its own id or a variant one (id * 10000 + n), so the rule is found by the amount in the card label.
+local function currencyRule(item, count)
+    for key, rec in pairs(items) do
+        local id = tonumber(key:match('^(%d+)x'))
+        if rec.auto and rec.name and id and (id == item or math.floor(id / 10000) == item)
+                and tonumber((rec.name:gsub('%D', ''))) == count then
+            return rec.auto
+        end
+    end
+    return nil
+end
+
+-- A count the pool never showed borrows the item's rule, but only when all its variants agree.
+local function itemRule(item)
+    local found = nil
+    for key, rec in pairs(items) do
+        if key:match('^(%d+)x') == tostring(item) then
+            if not rec.auto or (found and found ~= rec.auto) then return nil end
+            found = rec.auto
+        end
+    end
+    return found
+end
+
+local function ruleOf(item, count)
+    local rec = items[prizeKey(item, count)]
+    if rec and rec.auto then return rec.auto end
+    if CURRENCY_LABEL[item] then return currencyRule(item, count) end
+    if not rec then return itemRule(item) end
+    return nil
+end
+
+-- How much of a case pool has a rule: what the panel shows before a run.
+local function ruleCoverage(caseKey)
+    local total, ruled = 0, 0
+    for _, rec in pairs(items) do
+        if rec.cases and rec.cases[caseKey] then
+            total = total + 1
+            if rec.auto then ruled = ruled + 1 end
+        end
+    end
+    return total, ruled
+end
+
+-- Sorts only when every card has a rule: then the two packets cover all of them and the server returns to main by itself.
+local function planAutoSort()
+    autoSort = nil
+    if config.settings.auto_mode ~= 1 or not pending then return end
+
+    local shard, take = {}, {}
+    for i, prize in ipairs(pending.prizes) do
+        local rule = ruleOf(prize.item, prize.count)
+        if rule == 'shard' then
+            shard[#shard + 1] = i
+        elseif rule == 'take' then
+            take[#take + 1] = i
+        else
+            toast('info', 'Для «' .. itemName(prize.item, prize.count) .. '» нет правила, решите сами.')
+            return
+        end
+    end
+    autoSort = { at = os.clock() + AUTO_SORT_DELAY, shard = shard, take = take }
+end
+
+-- '{1, 3}' -> 'openCase.sell|[0,2]': the server counts from zero.
+local function fatePayload(action, indices)
+    local zero = {}
+    for i, idx in ipairs(indices) do zero[i] = idx - 1 end
+    return 'openCase.' .. action .. '|[' .. table.concat(zero, ',') .. ']'
+end
+
+-- Called from main() only.
+local function pumpAutoSort()
+    local plan = autoSort
+    if not plan or os.clock() < plan.at then return end
+
+    -- The player left or decided by hand: the plan no longer matches the screen.
+    if not inCase or not pending then autoSort = nil return end
+
+    if not plan.ackBy then
+        for _, prize in ipairs(pending.prizes) do
+            if prize.fate then autoSort = nil return end
+        end
+        if #plan.shard > 0 then
+            sendCef(fatePayload('sell', plan.shard))
+            -- Idempotent: a copy of the packet seen by onSendPacket changes nothing.
+            setFate(plan.shard, 'shard')
+            if #plan.take == 0 then autoSort = nil return end
+            -- «save» goes once the server is done breaking.
+            plan.ackBy = os.clock() + AUTO_SORT_ACK
+            plan.notified = false
+            return
+        end
+    elseif not plan.notified and os.clock() < plan.ackBy then
+        return
+    end
+
+    sendCef(fatePayload('save', plan.take))
+    setFate(plan.take, 'take')
+    autoSort = nil
+end
+
+-- The manual checkbox never runs alongside auto mode.
+local function manualAutoOpen()
+    return config.settings.auto_mode ~= 1 and config.settings.auto_open == 1
+end
+
+local function startRun()
+    if run or not inCase then return end
+    run = { active = true, done = 0, taken = 0, sharded = 0, shards = 0, bonus = {} }
+    lastRun = nil
+    -- On the cards screen the current prizes go first; on main the first case opens right away.
+    if pending then planAutoSort()
+    elseif caseInfo.count > 0 then autoOpenAt = os.clock() end
+end
+
+-- No more openings; the summary follows once the current one is written down.
+local function stopRun(delay)
+    if not run then return end
+    run.active = false
+    autoOpenAt = nil
+    finishAt = os.clock() + (delay or 0)
+end
+
+local function finishRun()
+    finishAt = nil
+    if not run then return end
+    -- The last opening may still wait for its informers.
+    if pending and pending.readyAt then flushPending() end
+    lastRun = run
+    run = nil
 end
 
 -- One shard informer arrives per broken item, in the order they were broken.
@@ -1062,6 +1239,10 @@ local function onScanAnswer(body)
 
             -- The variant keeps the pool label verbatim: that is the text on the card.
             learnItem(id, name, rarity, nil, count)
+            -- Pool membership lets the rules table list the case before anything drops.
+            local rec = items[prizeKey(id, count)]
+            rec.cases = rec.cases or {}
+            rec.cases[tostring(caseId)] = true
             -- The base one drops the quantity suffix and covers counts the pool never showed.
             learnItem(id, (bare and bare ~= '') and bare or name)
             found = found + 1
@@ -1131,6 +1312,121 @@ end
 -- Overlay
 -- =========================================================================
 
+local function cases(n, one, few, many)
+    local d10, d100 = n % 10, n % 100
+    local word = many or 'кейсов'
+    if d10 == 1 and d100 ~= 11 then word = one or 'кейс'
+    elseif d10 >= 2 and d10 <= 4 and (d100 < 12 or d100 > 14) then word = few or 'кейса' end
+    return formatNum(n) .. ' ' .. word
+end
+
+-- What a run brought, live or finished: items, then bonuses with their chance in this run.
+local function runStats(r)
+    shadowText('Предметов: ', COL_DIM)
+    imgui.SameLine(0, 0)
+    shadowText('забрано ' .. r.taken, COL_TEXT)
+    imgui.SameLine(0, 0)
+    shadowText(' · ', COL_MUTED)
+    imgui.SameLine(0, 0)
+    shadowText('расколото ' .. r.sharded, COL_SHARD)
+    if r.shards > 0 then
+        imgui.SameLine(0, 0)
+        shadowText(' · ', COL_MUTED)
+        imgui.SameLine(0, 0)
+        shadowText('+' .. formatNum(r.shards) .. ' осколков', COL_SHARD)
+    end
+    for name, n in pairs(r.bonus) do
+        -- «(Вечная)» is dropped: the line has to fit the panel.
+        local short = name:gsub('%s*%b()', '')
+        -- Always a percent here, never «1 из N»; a second decimal only when the first would read 0.0.
+        local pct = r.done > 0 and n / r.done * 100 or 0
+        local chance = (pct >= 0.05 or pct == 0) and ('%.1f%%'):format(pct) or ('%.2f%%'):format(pct)
+        shadowText(esc(('%s: %d шт. (шанс: %s)'):format(short, n, chance)), RARITY_COL.gold)
+    end
+end
+
+-- Steps in the order of use: rules, how many, start, what came out.
+local function renderAutoPanel(caseKey)
+    local right = imgui.GetWindowContentRegionMax().x
+
+    -- 1. Rules of this case.
+    local total, ruled = ruleCoverage(caseKey)
+    if total == 0 then
+        shadowText('Правила: пул ещё не загружен', COL_DIM)
+    elseif ruled == total then
+        shadowText('Правила: все ' .. cases(total, 'приз', 'приза', 'призов'), RARITY_COL.green)
+    else
+        shadowText(('Правила: %d из %s'):format(ruled, cases(total, 'приза', 'призов', 'призов')), RARITY_COL.gold)
+    end
+    local setupW = imgui.CalcTextSize('Настроить').x + 16
+    imgui.SameLine(right - setupW)
+    if imgui.Button('Настроить', imgui.ImVec2(setupW, 0)) then
+        windowMode[0] = true
+        rulesMode = true
+        rulesCase = caseKey
+        geomDirty = true
+    end
+    imgui.Separator()
+
+    -- 2. How many: steps on both sides of the number; stays editable during a run.
+    local function step(label, delta)
+        if imgui.Button(label, imgui.ImVec2(40, 0)) then
+            runTarget[0] = math.max(0, runTarget[0] + delta)
+        end
+        imgui.SameLine(0, 4)
+    end
+    step('-10', -10)
+    step('-1', -1)
+    imgui.PushItemWidth(imgui.GetContentRegionAvail().x - 88)
+    if imgui.InputInt('##target', runTarget, 0, 0) and runTarget[0] < 0 then runTarget[0] = 0 end
+    -- Digits typed here must not reach the case hotkeys.
+    typing = imgui.IsItemActive()
+    imgui.PopItemWidth()
+    imgui.SameLine(0, 4)
+    step('+1', 1)
+    if imgui.Button('+10', imgui.ImVec2(40, 0)) then runTarget[0] = runTarget[0] + 10 end
+
+    -- 3. One button: says what it will spend, and turns into «Стоп» while a run goes.
+    local left = caseInfo.count
+    if run then
+        local label = 'Заканчиваю...'
+        if run.active then
+            local all = run.done + left
+            local goal = runTarget[0] > 0 and math.min(runTarget[0], all) or all
+            label = ('Стоп (%d из %s)'):format(run.done, cases(goal))
+        end
+        if imgui.Button(label .. '##start', imgui.ImVec2(-1, 0)) and run.active then
+            stopRun(0)
+            -- Mid-opening the summary waits for the return to main; on main nothing else will arrive.
+            if pending then finishAt = nil end
+        end
+    else
+        local label
+        if left <= 0 then
+            label = 'Кейсов нет'
+        elseif runTarget[0] == 0 or runTarget[0] >= left then
+            label = 'Открыть все (' .. cases(left) .. ')'
+        else
+            label = 'Открыть ' .. cases(runTarget[0])
+        end
+        if imgui.Button(label .. '##start', imgui.ImVec2(-1, 0)) and left > 0 then startRun() end
+        if imgui.IsItemHovered() then
+            imgui.SetTooltip('Призы разбираются по правилам.\n'
+                .. 'Если у выпавшего приза правила нет, решаете вы,\n'
+                .. 'а прогон продолжится после этого.\n'
+                .. 'Число можно менять и во время прогона.')
+        end
+    end
+
+    -- 4. What the run brings: live while it goes, then kept until the next start.
+    local shown = run or lastRun
+    if shown then
+        imgui.Separator()
+        shadowText((run and 'Текущий прогон: открыто ' or 'Прошлый прогон: открыто ') .. cases(shown.done), COL_TEXT)
+        runStats(shown)
+    end
+end
+
 local function renderOverlay()
     local id = caseInfo.id
     local collapsed = config.settings.ovl_collapsed == 1
@@ -1158,30 +1454,47 @@ local function renderOverlay()
     local counts = overlayCounts(id)
 
     pushSmall()
-    shadowText('Открыто сегодня: ' .. formatNum(counts.today), COL_DIM)
-    shadowText('Открыто всего: ' .. formatNum(counts.all), COL_DIM)
+    shadowText(('Открыто сегодня: %s · всего: %s'):format(formatNum(counts.today), formatNum(counts.all)), COL_DIM)
     popSmall()
 
     imgui.Separator()
 
-    toggle('Пропускать анимацию открытия', cfgSkip, 'auto_skip')
-    toggle('Показывать содержимое кейса', cfgOpenAll, 'auto_open_all')
-    toggle('Автооткрытие следующего кейса', cfgAutoOpen, 'auto_open',
-        'Скрипт сам жмёт «ОТКРЫТЬ», пока кейсы не кончатся.\n'
-        .. 'Если предпочитаете контролировать процесс, выключите\n'
-        .. 'и нажимайте Пробел.\n'
-        .. 'Но что делать с наградами, вы в любом случае\n'
-        .. 'решаете вручную.')
+    -- Two modes: the player decides every prize, or a run of N cases is sorted by the rules.
+    local auto = config.settings.auto_mode == 1
+    local half = (imgui.GetContentRegionAvail().x - 4) / 2
+    local function modeButton(label, on, value)
+        if on then imgui.PushStyleColor(imgui.Col.Button, imgui.ImVec4(0.3, 0.5, 0.3, 1.0)) end
+        -- Switching is locked while a run is going.
+        if imgui.Button(label, imgui.ImVec2(half, 0)) and not run and not on then
+            config.settings.auto_mode = value
+            saveConfig()
+        end
+        if on then imgui.PopStyleColor() end
+    end
+    modeButton('Вручную', not auto, 0)
+    imgui.SameLine(0, 4)
+    modeButton('Авто', auto, 1)
+    imgui.Spacing()
 
-    -- Key hints live in the case window itself.
+    if not auto then
+        toggle('Пропускать анимацию открытия', cfgSkip, 'auto_skip')
+        toggle('Показывать содержимое кейса', cfgOpenAll, 'auto_open_all')
+        toggle('Автооткрытие следующего кейса', cfgAutoOpen, 'auto_open',
+            'Скрипт сам жмёт «ОТКРЫТЬ», пока кейсы не кончатся,\n'
+            .. 'а награды вы разбираете сами.\n'
+            .. 'Работает только в ручном режиме.')
+    else
+        renderAutoPanel(tostring(id))
+    end
+
     imgui.Separator()
     imgui.Spacing()
     if imgui.Button('Что выпадало', imgui.ImVec2(-1, 0)) then
         windowMode[0] = true
+        rulesMode = false
         geomDirty = true
         viewRev = -1
     end
-
 end
 
 -- =========================================================================
@@ -1236,23 +1549,212 @@ local function prizeRows(stats, rawSearch)
     return rows
 end
 
+-- =========================================================================
+-- Rules tab
+-- =========================================================================
+
+-- One table: the main chunk is close to LuaJIT's 200-local limit.
+local RULES = {
+    next = { take = 'shard', shard = nil },
+    label = { take = 'Забрать', shard = 'Расколоть' },
+    order = { gold = 1, purple = 2, green = 3, common = 4 },
+    rarities = {
+        { 'common', 'Обычные' }, { 'green', 'Зелёные' },
+        { 'purple', 'Фиолетовые' }, { 'gold', 'Золотые' },
+    },
+}
+
+local function setRule(key, rule)
+    items[key] = items[key] or {}
+    items[key].auto = rule
+    saveItems()
+end
+
+-- Cases with a scanned pool, in id order.
+local function poolCases()
+    local seen, list = {}, {}
+    for _, rec in pairs(items) do
+        for key in pairs(rec.cases or {}) do
+            if not seen[key] then
+                seen[key] = true
+                list[#list + 1] = key
+            end
+        end
+    end
+    table.sort(list, function(a, b) return (tonumber(a) or 0) < (tonumber(b) or 0) end)
+    return list
+end
+
+local poolCache = { case = nil, search = nil, itemsRev = -1, rows = nil }
+
+-- The pool of one case, rarest first; the rule is read live, so a click needs no rebuild.
+local function poolRows(caseKey, rawSearch)
+    local c = poolCache
+    if c.rows and c.case == caseKey and c.search == rawSearch and c.itemsRev == itemsRev then
+        return c.rows
+    end
+
+    local search = lowerUtf8(rawSearch)
+    local rows = {}
+    for key, rec in pairs(items) do
+        if rec.cases and rec.cases[caseKey] then
+            local item, count = keyParts(key)
+            local name = rec.name or itemName(item, count)
+            -- The card puts a glyph the font lacks before a currency amount: the label is rebuilt from the digits.
+            local currency = CURRENCY_LABEL[item] or CURRENCY_LABEL[math.floor(item / 10000)]
+            local amount = currency and tonumber((name:gsub('%D', '')))
+            if amount then name = currency(amount) end
+            if search == '' or lowerUtf8(name):find(search, 1, true) then
+                rows[#rows + 1] = { key = key, rec = rec, name = name,
+                    order = RULES.order[rec.rarity or ''] or 5 }
+            end
+        end
+    end
+    table.sort(rows, function(a, b)
+        if a.order ~= b.order then return a.order < b.order end
+        return a.name < b.name
+    end)
+
+    poolCache = { case = caseKey, search = rawSearch, itemsRev = itemsRev, rows = rows }
+    return rows
+end
+
+-- Applies to the rows on screen, search and status filter included.
+local function renderBulkRules(rows)
+    imgui.TextColored(COL_MUTED, 'Всем сразу:')
+    for _, r in ipairs(RULES.rarities) do
+        imgui.TextColored(RARITY_COL[r[1]], r[2])
+        local hit, rule = false, nil
+        imgui.SameLine(110)
+        if imgui.SmallButton('Забрать##bulk_take_' .. r[1]) then hit, rule = true, 'take' end
+        imgui.SameLine()
+        if imgui.SmallButton('Расколоть##bulk_shard_' .. r[1]) then hit, rule = true, 'shard' end
+        imgui.SameLine()
+        if imgui.SmallButton('Сбросить##bulk_none_' .. r[1]) then hit = true end
+        if hit then
+            itemsDeferred = true
+            for _, row in ipairs(rows) do
+                if row.rec.rarity == r[1] then setRule(row.key, rule) end
+            end
+            itemsDeferred = false
+            saveItems()
+        end
+    end
+end
+
+local function renderRules(pick)
+    local cases = poolCases()
+    -- The case on screen first, then whatever was picked before.
+    if not rulesCase then
+        local current = tostring(caseInfo.id)
+        for _, key in ipairs(cases) do
+            if key == current then rulesCase = key end
+        end
+        rulesCase = rulesCase or cases[1]
+    end
+
+    imgui.BeginChild('##rules_cases', imgui.ImVec2(150, -1), true)
+    for _, key in ipairs(cases) do
+        if pick(caseName(tonumber(key)), 'rules' .. key, rulesCase == key) then
+            rulesCase = key
+        end
+    end
+    imgui.EndChild()
+
+    imgui.SameLine()
+    imgui.BeginChild('##rules_panel', imgui.ImVec2(-1, -1), true)
+
+    if not rulesCase then
+        imgui.TextDisabled('Зайдите в кейс: скрипт запомнит его призы, и здесь появится список.')
+        imgui.EndChild()
+        return
+    end
+
+    imgui.TextWrapped('Режим «Авто» разбирает призы сам, только когда правило есть у каждого выпавшего.')
+    imgui.Spacing()
+
+    local all = poolRows(rulesCase, ffi.string(searchBuf))
+
+    -- Status filter with counts; the rule is read live, so a changed row leaves the filter at once.
+    local counts = { all = #all, none = 0, take = 0, shard = 0 }
+    local rows = {}
+    for _, row in ipairs(all) do
+        local status = row.rec.auto or 'none'
+        counts[status] = counts[status] + 1
+        if rulesFilter == 'all' or rulesFilter == status then rows[#rows + 1] = row end
+    end
+    renderBulkRules(rows)
+    imgui.Separator()
+    imgui.Spacing()
+
+    -- The filter sits right above the list it narrows.
+    local filters = {
+        { 'all', 'Все' }, { 'none', 'Нет правила' }, { 'take', 'Забрать' }, { 'shard', 'Расколоть' },
+    }
+    for i, f in ipairs(filters) do
+        if i > 1 then imgui.SameLine() end
+        local label = ('%s (%d)'):format(f[2], counts[f[1]])
+        if pick(label, 'filter_' .. f[1], rulesFilter == f[1], imgui.CalcTextSize(label).x + 16) then
+            rulesFilter = f[1]
+        end
+    end
+    imgui.Separator()
+
+    local ruleWidth = 120
+    for _, row in ipairs(rows) do
+        imgui.Columns(2, '##rules', false)
+        imgui.SetColumnWidth(0, imgui.GetWindowContentRegionMax().x - ruleWidth)
+        imgui.SetColumnWidth(1, ruleWidth)
+
+        imgui.TextColored(RARITY_COL[row.rec.rarity or ''] or COL_TEXT, esc(row.name))
+        imgui.NextColumn()
+
+        -- Click cycles: none, take, break. Same width for all, and «no rule» is only a dim caption.
+        local rule = row.rec.auto
+        imgui.PushStyleColor(imgui.Col.Text, rule == 'shard' and COL_SHARD or (rule and COL_TEXT or COL_MUTED))
+        -- A bare caption keeps a quiet hover, not the bright default.
+        if not rule then
+            imgui.PushStyleColor(imgui.Col.Button, imgui.ImVec4(0, 0, 0, 0))
+            imgui.PushStyleColor(imgui.Col.ButtonHovered, imgui.ImVec4(1, 1, 1, 0.08))
+            imgui.PushStyleColor(imgui.Col.ButtonActive, imgui.ImVec4(1, 1, 1, 0.15))
+        end
+        -- Small-button height, but a fixed width so the column lines up.
+        imgui.PushStyleVarVec2(imgui.StyleVar.FramePadding, imgui.ImVec2(4, 0))
+        if imgui.Button((RULES.label[rule] or 'Нет правила') .. '##auto_' .. row.key,
+                imgui.ImVec2(ruleWidth - 16, 0)) then
+            setRule(row.key, rule and RULES.next[rule] or 'take')
+        end
+        imgui.PopStyleVar()
+        imgui.PopStyleColor(rule and 1 or 4)
+
+        imgui.Columns(1)
+        imgui.Separator()
+    end
+    if #rows == 0 then imgui.TextDisabled('Пусто') end
+
+    imgui.EndChild()
+end
+
 local function renderPrizeTable(stats)
     local rows = prizeRows(stats, ffi.string(searchBuf))
 
-    local widths = { 70, 85, 100 }
+    -- Mixed case types have no common denominator: the chance column is dropped.
+    local chance = stats.caseCount <= 1
+    local widths = chance and { 70, 85, 100 } or { 70, 85 }
+    local titles = chance and { 'Забрал', 'Расколол', 'Шанс' } or { 'Забрал', 'Расколол' }
     local used = 0
     for _, w in ipairs(widths) do used = used + w end
     local nameWidth = imgui.GetContentRegionAvail().x - used
 
     local function columns()
-        imgui.Columns(4, '##prizes', false)
+        imgui.Columns(#widths + 1, '##prizes', false)
         imgui.SetColumnWidth(0, nameWidth)
         for i, w in ipairs(widths) do imgui.SetColumnWidth(i, w) end
     end
 
     columns()
     imgui.TextColored(COL_MUTED, 'Предмет')
-    for _, title in ipairs({ 'Забрал', 'Расколол', 'Шанс' }) do
+    for _, title in ipairs(titles) do
         imgui.NextColumn()
         imgui.TextColored(COL_MUTED, title)
     end
@@ -1278,12 +1780,9 @@ local function renderPrizeTable(stats)
         else
             imgui.TextDisabled('0')
         end
-        imgui.NextColumn()
 
-        -- Mixed case types have no common denominator: no chance shown.
-        if stats.caseCount > 1 then
-            imgui.TextDisabled('-')
-        else
+        if chance then
+            imgui.NextColumn()
             -- esc is mandatory: «3.4%» would arrive as «3.4», imgui.Text is printf.
             imgui.TextColored(COL_DIM, esc(formatChance(row.acc.events, stats.totalOpens)))
         end
@@ -1297,26 +1796,30 @@ local function renderPrizeTable(stats)
 end
 
 local function renderWindow()
-    local stats = view()
-
-    imgui.PushItemWidth(160)
-    imgui.InputTextWithHint('##search', 'Поиск по предмету...', searchBuf, ffi.sizeof(searchBuf))
-    imgui.PopItemWidth()
-
-
-    imgui.Spacing()
-    renderSummary(stats)
-
-    imgui.BeginChild('##filters', imgui.ImVec2(150, -1), true)
-
-    local function pick(label, id, active)
+    local function pick(label, id, active, width)
         if active then
             imgui.PushStyleColor(imgui.Col.Button, imgui.ImVec4(0.3, 0.5, 0.3, 1.0))
         end
-        local hit = imgui.Button(esc(label) .. '##' .. id, imgui.ImVec2(-1, 0))
+        local hit = imgui.Button(esc(label) .. '##' .. id, imgui.ImVec2(width or -1, 0))
         if active then imgui.PopStyleColor() end
         return hit
     end
+
+    if pick('Что выпадало', 'tab_log', not rulesMode, 120) then rulesMode = false end
+    imgui.SameLine()
+    if pick('Правила', 'tab_rules', rulesMode, 120) then rulesMode = true end
+    imgui.SameLine()
+    imgui.PushItemWidth(160)
+    imgui.InputTextWithHint('##search', 'Поиск по предмету...', searchBuf, ffi.sizeof(searchBuf))
+    imgui.PopItemWidth()
+    imgui.Spacing()
+
+    if rulesMode then return renderRules(pick) end
+
+    local stats = view()
+    renderSummary(stats)
+
+    imgui.BeginChild('##filters', imgui.ImVec2(150, -1), true)
 
     -- Cases on top, dates scroll: dates grow without limit.
     if pick('Все кейсы', 'allcases', selectedCase == '') then
@@ -1492,6 +1995,10 @@ local function setActiveView(name)
         end
     else
         autoOpenAt = nil
+        autoSort = nil
+        typing = false
+        -- Leaving ends the run; the server takes the leftovers, so the summary waits for them.
+        if run then stopRun(FLUSH_DELAY + RUN_FINISH_DELAY) end
         -- Closing the window makes the server take everything the player left undecided.
         autoTakeRemaining()
         if winOn[0] and not windowMode[0] then
@@ -1524,14 +2031,26 @@ local function handleEvent(event, payload)
         local list = ok and type(args) == 'table' and args[1]
         if type(list) == 'table' and #list > 0 then
             onRewards(list, caseInfo.id)
+            if run and run.active then run.done = run.done + 1 end
+            planAutoSort()
         end
         return
     end
 
+    -- Closes both buttons: the sort waits for it between «sell» and «save».
+    if event == 'event.notify.initialize' then
+        -- Our own toast is not the server's answer.
+        if payload:find(TOAST_TITLE, 1, true) then return end
+        if autoSort then autoSort.notified = true end
+        return
+    end
+
     if event == 'openCase.selectVideo' then
-        if config.settings.auto_skip == 1 then skipVideo() end
+        -- Auto mode always skips and reveals: a prize without a rule waits for the player on that screen.
+        local auto = config.settings.auto_mode == 1
+        if auto or config.settings.auto_skip == 1 then skipVideo() end
         -- The cards screen shows up after the video.
-        if config.settings.auto_open_all == 1 then openAllCards() end
+        if auto or config.settings.auto_open_all == 1 then openAllCards() end
         return
     end
 
@@ -1542,8 +2061,17 @@ local function handleEvent(event, payload)
         local ok, args = pcall(decodeJson, payload)
         if ok and type(args) == 'table' and args[1] == 'main' and inCase then
             autoScan(caseInfo.id)
-            -- Main returns only after the prizes are dealt with, so auto-open paces itself.
-            if config.settings.auto_open == 1 and not pending and caseInfo.count > 0 then
+            -- Main returns only after the prizes are dealt with, so the run paces itself.
+            if run and run.active and not pending then
+                -- The goal is read live: the player may raise or lower it mid-run.
+                if caseInfo.count <= 0 or (runTarget[0] > 0 and run.done >= runTarget[0]) then
+                    stopRun(RUN_FINISH_DELAY)
+                else
+                    autoOpenAt = os.clock() + AUTO_OPEN_DELAY
+                end
+            elseif run and not run.active and not finishAt then
+                finishAt = os.clock() + RUN_FINISH_DELAY
+            elseif not run and manualAutoOpen() and not pending and caseInfo.count > 0 then
                 autoOpenAt = os.clock() + AUTO_OPEN_DELAY
             end
         end
@@ -1652,11 +2180,9 @@ end
 function sampev.onShowDialog(dialogId, style, title, button1, button2, text)
     if not inCase then return end
 
-    local body = cyr:decode(tostring(text or ''))
     local head = cyr:decode(tostring(title or ''))
-    if not (body:find(BONUS_MARK, 1, true) or head:find(BONUS_TITLE, 1, true)) then
-        return
-    end
+    if not head:find(BONUS_TITLE, 1, true) then return end
+    local body = cyr:decode(tostring(text or ''))
 
     for _, bonus in ipairs(DIALOG_BONUSES) do
         if body:find(bonus.find, 1, true) then
@@ -1672,6 +2198,7 @@ function sampev.onShowDialog(dialogId, style, title, button1, button2, text)
             rec.taken = rec.taken + 1
             bucket.prizes[key] = rec
             saveHistory()
+            if run then run.bonus[bonus.name] = (run.bonus[bonus.name] or 0) + 1 end
             return
         end
     end
@@ -1939,13 +2466,14 @@ function main()
         end
 
         pumpScan()
+        pumpAutoSort()
 
         -- Shard informers arrive after the outgoing packet, hence the deferred write.
         if pending and pending.readyAt and os.clock() >= pending.readyAt then
             flushPending()
         end
 
-        local keysLive = not sampIsChatInputActive()
+        local keysLive = not typing and not sampIsChatInputActive()
             and not sampIsDialogActive() and not isPauseMenuActive()
 
         -- Keys are free inside the fullscreen CEF window; off while the log window takes input.
@@ -1970,11 +2498,13 @@ function main()
         -- Conditions are rechecked: the player could have left or switched it off during the pause.
         if autoOpenAt and os.clock() >= autoOpenAt then
             autoOpenAt = nil
-            if inCase and config.settings.auto_open == 1 and not pending
-                    and caseInfo.count > 0 then
+            if inCase and not pending and caseInfo.count > 0
+                    and ((run and run.active) or (not run and manualAutoOpen())) then
                 pressActionButton()
             end
         end
+
+        if finishAt and os.clock() >= finishAt then finishRun() end
 
         if cfgSaveAt and os.clock() >= cfgSaveAt then
             cfgSaveAt = nil
