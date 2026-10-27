@@ -1,6 +1,6 @@
 script_name('Case Opener')
 script_author('TheMY3')
-script_version('2.1.0')
+script_version('2.1.1')
 
 -- Forum topic (current version, discussion): https://www.blast.hk/threads/257210/
 
@@ -112,7 +112,7 @@ local AUTO_SORT_ACK = 2.5 -- longest wait for the shard notify before «save» g
 -- Prize sorting by the rules: what goes where and when; packets leave only from main().
 local autoSort = nil -- {at, shard = {indices}, take = {indices}, ackBy, notified}
 -- An auto-mode run: lives from «Старт» until its summary.
-local run = nil -- {active, done, taken, sharded, shards, bonus = {name -> count}}; the goal is runTarget, live.
+local run = nil -- {active, done, taken, sharded, shards, bonus = {name -> count}, all}; the goal is runTarget, live.
 local runTarget = new.int(0) -- how many to open, 0 means until the cases run out.
 local finishAt = nil -- the summary waits for the last opening to be written down.
 local RUN_FINISH_DELAY = 0.5 -- lets trailing informers of the last opening land first.
@@ -1119,7 +1119,9 @@ end
 
 local function startRun()
     if run or not inCase then return end
-    run = { active = true, done = 0, taken = 0, sharded = 0, shards = 0, bonus = {} }
+    -- The case count is fixed at the start: the server refreshes it only on the return to main,
+    -- so done + count would run one ahead for the whole of every opening.
+    run = { active = true, done = 0, taken = 0, sharded = 0, shards = 0, bonus = {}, all = caseInfo.count }
     lastRun = nil
     -- On the cards screen the current prizes go first; on main the first case opens right away.
     if pending then planAutoSort()
@@ -1391,8 +1393,7 @@ local function renderAutoPanel(caseKey)
     if run then
         local label = 'Заканчиваю...'
         if run.active then
-            local all = run.done + left
-            local goal = runTarget[0] > 0 and math.min(runTarget[0], all) or all
+            local goal = runTarget[0] > 0 and math.min(runTarget[0], run.all) or run.all
             label = ('Стоп (%d из %s)'):format(run.done, cases(goal))
         end
         if imgui.Button(label .. '##start', imgui.ImVec2(-1, 0)) and run.active then
