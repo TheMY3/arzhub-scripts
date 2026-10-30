@@ -385,6 +385,42 @@
       ],
       "description": "Добавляет возможность выбирать пункты диалога цифрами. Приводит нумерацию пунктов к единому стилю. Добавляет кнопку MAX в некоторых диалогах ввода количества.",
       "usage": "Работает автоматически в диалогах: цифра подсвечивает пункт, повторное нажатие выбирает его, 0 выбирает десятый пункт."
+    },
+    {
+      "id": "arzhub",
+      "name": "ArzHub",
+      "filename": "ArzHub.lua",
+      "legacy_filenames": [],
+      "version": "0.1.0",
+      "path": "scripts/arzhub.lua",
+      "topic": "",
+      "actual": true,
+      "changelog": [
+        {
+          "version": "0.1.0",
+          "notes": [
+            "Первая версия: окно со списком скриптов, установка, обновление и удаление в один клик."
+          ]
+        }
+      ]
     }
-  ]
+  ],
+  "ui": {
+    "version": "1.0.0",
+    "path": "hub/hub.html"
+  },
+  "deps": {
+    "socket": [
+      {
+        "path": "lib/socket.lua",
+        "target": "socket.lua",
+        "sha256": "332871e3beeaccf8bff18cde1509e81c2bd16beb511b1fe586c12862dc7667b2"
+      },
+      {
+        "path": "lib/socket/core.dll",
+        "target": "socket/core.dll",
+        "sha256": "c7e65c06df09addf05fd807e964e87f4ea56476e15e19ea5e47a321419ace50e"
+      }
+    ]
+  }
 }
