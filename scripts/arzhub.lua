@@ -1,6 +1,6 @@
 script_name('ArzHub')
 script_author('TheMY3')
-script_version('0.1.0')
+script_version('0.1.1')
 
 -- In-game manager for the ArzHub scripts: what is installed, what is out, install, update and remove in one click.
 -- Everything asynchronous is a step of main(): no lua_thread anywhere, hooks and download callbacks only queue or flag.
@@ -977,6 +977,14 @@ local function autoReboot()
     return script.find('ML-AutoReboot') ~= nil
 end
 
+-- ML-AutoReboot watches only the scripts that were loaded when it started; the ones loaded from here it never sees.
+local loadedHere = {}
+
+local function loadScript(path)
+    loadedHere[path:lower()] = true
+    return script.load(path)
+end
+
 -- current -> current.old, tmp -> current; a failed second step puts current back. The .old copy is the manual rollback.
 local function atomicReplace(tmp, target)
     local old = target .. '.old'
@@ -1042,14 +1050,14 @@ local function installEntry(e, done)
                 finish(false, FAIL_TEXT.replace .. keep)
                 return
             end
-            -- ML-AutoReboot restarts a replaced file itself; a second load of our own would race it.
-            if autoReboot() then
+            -- ML-AutoReboot restarts a replaced file it watches; a second load of our own would race it.
+            if autoReboot() and not loadedHere[target:lower()] then
                 finish(true, OK_UPDATE_AUTOREBOOT:format(e.version))
                 return
             end
             local running = findLoaded(target)
             if running then running:unload() end
-            script.load(target)
+            loadScript(target)
             finish(true, OK_UPDATE:format(e.version))
             return
         end
@@ -1065,7 +1073,7 @@ local function installEntry(e, done)
             removeIfExists(scan.path .. '.old')
             os.rename(scan.path, scan.path .. '.old')
         end
-        script.load(target)
+        loadScript(target)
         finish(true, scan.path and OK_UPDATE:format(e.version) or OK_INSTALL)
     end, function(pct)
         busy[id] = { pct = pct }
