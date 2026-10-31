@@ -1,6 +1,6 @@
 script_name('ArzHub')
 script_author('TheMY3')
-script_version('0.1.4')
+script_version('0.1.5')
 
 -- In-game manager for the ArzHub scripts: what is installed, what is out, install, update and remove in one click.
 -- Everything asynchronous is a step of main(): no lua_thread anywhere, hooks and download callbacks only queue or flag.
@@ -547,7 +547,12 @@ local BOOT_JS = [==[
   // The page says where its header was grabbed; the frame follows the mouse over a cover in this document,
   // so a mouse that leaves the frame mid-drag is not lost. Nothing is kept: a new window opens centred.
   let cover = null;
-  const endDrag = () => { if (cover) { cover.remove(); cover = null; } };
+  const endDrag = () => {
+    if (!cover) return;
+    cover.remove();
+    cover = null;
+    window.removeEventListener('blur', endDrag);
+  };
   const startDrag = (data) => {
     const p = String(data).split(',').map(Number);
     if (!frame || p.length !== 2 || p.some(isNaN)) return;
@@ -557,14 +562,16 @@ local BOOT_JS = [==[
     const c = cover.style;
     c.position = 'fixed'; c.left = '0'; c.top = '0'; c.width = '100vw'; c.height = '100vh';
     c.zIndex = '2147483647'; c.cursor = 'move'; c.background = 'transparent';
+    // The game reports moves with a held button as buttons 1 and 0 in turn, so only mouseup or a lost focus ends it.
     cover.addEventListener('mousemove', (e) => {
-      if (!frame || !e.buttons) { endDrag(); return; }
+      if (!frame) { endDrag(); return; }
       const s = frame.style;
       s.transform = 'none';
       s.left = Math.max(0, Math.min(window.innerWidth - r.width, e.clientX - p[0])) + 'px';
       s.top = Math.max(0, Math.min(window.innerHeight - r.height, e.clientY - p[1])) + 'px';
     });
     cover.addEventListener('mouseup', endDrag);
+    window.addEventListener('blur', endDrag);
     (document.body || document.documentElement).appendChild(cover);
   };
   const onMessage = (e) => {
