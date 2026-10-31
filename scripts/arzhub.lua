@@ -1,6 +1,6 @@
 script_name('ArzHub')
 script_author('TheMY3')
-script_version('0.1.1')
+script_version('0.1.2')
 
 -- In-game manager for the ArzHub scripts: what is installed, what is out, install, update and remove in one click.
 -- Everything asynchronous is a step of main(): no lua_thread anywhere, hooks and download callbacks only queue or flag.
@@ -39,9 +39,6 @@ local LOG_PATH = DATA_DIR .. '\\arzhub.log'
 local LOGIN_TEXT = 'Доступны обновления: %s. Открыть: /hub'
 local SOCKET_FAIL_TEXT = 'Окну не хватает библиотеки LuaSocket, и скачать её не вышло. Положи вручную в moonloader\\lib: ' .. SOCKET_LIB_URL
 local BOOT_FAIL_TEXT = 'Окно не открылось: игра не ответила. Попробуй ещё раз.'
-local HIDE_TEXT = 'Окно появится снова, когда закроешь окно игры.'
-local DEFER_TEXT = 'Откроется, когда закроешь окно игры.'
-local CANCEL_TEXT = 'Открытие отменено.'
 local PORTS_BUSY_TEXT = 'Окну нужен свободный порт ' .. PORT_FIRST .. '-' .. PORT_LAST .. ', а все заняты другими программами.'
 
 -- ============================================================================
@@ -544,6 +541,21 @@ local BOOT_JS = [==[
     send(String(d.kind), d.data);
   };
   window.addEventListener('message', onMessage);
+  // Arizona's own cursor: the mouse goes to CEF, the keys stay with the game.
+  let wantCursor = false;
+  const setCursor = (on) => {
+    try { window.cef.ToggleCursor(0, on, true); } catch (e) { send('error', 'cursor: ' + e); }
+  };
+  // Arizona recomputes its cursor on every dialog, menu or window change and knows nothing of ours.
+  const watchCursor = () => {
+    if (!wantCursor || !frame) return;
+    let state;
+    try { state = window.cef.GetCursor(); } catch (e) { return; }
+    Promise.resolve(state).then((on) => {
+      if (on === false && wantCursor) { setCursor(true); send('cursor', 'restored'); }
+    }).catch(() => {});
+  };
+  const watch = setInterval(watchCursor, 500);
   const api = {
     version: VERSION,
     reset: (ch) => { bufs[ch] = ''; },
@@ -555,8 +567,10 @@ local BOOT_JS = [==[
         frame = document.createElement('iframe');
         frame.id = 'arzhub-frame';
         frame.setAttribute('allowtransparency', 'true');
+        // Exactly the window's size, like an ImGui window: a click beside it reaches the game or Arizona.
         const s = frame.style;
-        s.position = 'fixed'; s.left = '0'; s.top = '0'; s.width = '100vw'; s.height = '100vh';
+        s.position = 'fixed'; s.left = '50%'; s.top = '50%'; s.transform = 'translate(-50%, -50%)';
+        s.width = 'min(860px, 92vw)'; s.height = 'min(520px, 86vh)';
         s.border = '0'; s.zIndex = '2147483646'; s.background = 'transparent';
         frame.onload = () => {
           send('loaded', '');
@@ -572,15 +586,19 @@ local BOOT_JS = [==[
         if (frame && frame.contentWindow) frame.contentWindow.postMessage({ arzhubIn: true, kind: kind, data: data }, '*');
       } catch (e) { send('error', 'post: ' + e); }
     },
-    close: () => { if (frame) { frame.remove(); frame = null; } },
-    hide: () => {
-      if (!frame) return;
-      frame.style.display = 'none';
-      try { const d = frame.contentDocument; if (d && d.activeElement) d.activeElement.blur(); } catch (e) {}
-      try { window.focus(); } catch (e) {}
+    // On always goes off -> on: the client gives the keys back to the game only on that switch, and an
+    // Arizona window may have switched the cursor on over ours. `leave` drops ours without switching it off.
+    cursor: (on, leave) => {
+      wantCursor = !!on;
+      if (on) { setCursor(false); setCursor(true); } else if (!leave) setCursor(false);
     },
-    show: () => { if (frame) { frame.style.display = ''; try { frame.contentWindow.focus(); } catch (e) {} } },
-    destroy: () => { api.close(); window.removeEventListener('message', onMessage); }
+    close: () => { if (frame) { frame.remove(); frame = null; } },
+    destroy: (leave) => {
+      if (wantCursor) api.cursor(false, leave);
+      clearInterval(watch);
+      api.close();
+      window.removeEventListener('message', onMessage);
+    }
   };
   window.__arzHub = api;
   send('boot', 'new');
@@ -592,26 +610,24 @@ local FALLBACK_HTML = [==[
 <!doctype html><html><head><meta charset="utf-8"><style>
 *{box-sizing:border-box}
 html,body{margin:0;height:100%;background:transparent;font:14px/1.45 "Segoe UI",Arial,sans-serif;color:#f2f2f2}
-.back{position:fixed;inset:0;background:rgba(0,0,0,.45);display:flex;align-items:center;justify-content:center}
-.win{width:min(520px,92vw);background:#1e1f22;border:1px solid rgba(255,255,255,.12);border-radius:8px;overflow:hidden}
+.win{height:100%;background:#1e1f22;border:1px solid rgba(255,255,255,.12);border-radius:8px;overflow:hidden}
 .head{height:42px;display:flex;align-items:center;gap:12px;padding:0 14px;background:#111213;border-bottom:1px solid rgba(255,255,255,.12)}
 .logo{font-weight:800;font-size:20px}.logo b{background:#ff6a1a;color:#111213;padding:0 5px;border-radius:4px}
 .x{margin-left:auto;cursor:pointer;color:#9a9a9a;font-size:20px}
 .bar{padding:12px 14px;background:rgba(217,180,92,.10);color:#d9b45c}
 .body{padding:16px 14px}
 button{height:34px;padding:0 14px;border-radius:6px;border:0;font-weight:600;color:#111213;background:linear-gradient(180deg,#ffa31a,#ff6a1a);cursor:pointer}
-</style></head><body><div class="back"><div class="win">
+</style></head><body><div class="win">
 <div class="head"><div class="logo">ARZ<b>HUB</b></div><span class="x" data-act="close">&times;</span></div>
 <div class="bar">Нет связи со списком скриптов</div>
 <div class="body"><button data-act="retry">Повторить</button></div>
-</div></div><script>
+</div><script>
 const toLua = (kind, data) => parent.postMessage({ arzhub: true, kind: kind, data: data == null ? '' : String(data) }, '*');
 document.addEventListener('click', (e) => {
   const a = e.target.closest('[data-act]');
   if (!a) return;
   if (a.dataset.act === 'close') toLua('close', 'button'); else toLua('retry', '');
 });
-addEventListener('keydown', (e) => { if (e.key === 'Escape') { e.preventDefault(); toLua('close', 'page-esc'); } });
 toLua('stat', '');
 setInterval(() => toLua('stat', ''), 1000);
 </script></body></html>
@@ -621,43 +637,27 @@ setInterval(() => toLua('stat', ''), 1000);
 -- CURSOR AND INPUT
 -- ============================================================================
 
-local rawOn = false       -- Our 220/25 "on" went out and no "off" followed yet.
+local cursorOn = false    -- Our window holds Arizona's cursor.
+local activeView = nil     -- Arizona window open right now, from incoming event.setActiveView.
 
--- The 220/25 packet hands mouse and keyboard to CEF. Left on, it keeps WASD from the game until a reconnect.
-local function rawPacket(on)
-    pcall(function()
-        local bs = raknetNewBitStream()
-        raknetBitStreamWriteInt8(bs, 25)
-        raknetBitStreamWriteInt32(bs, 0)
-        raknetBitStreamWriteInt8(bs, on and 128 or 0)
-        raknetBitStreamWriteInt16(bs, 0)
-        raknetEmulPacketReceiveBitStream(220, bs)
-        raknetDeleteBitStream(bs)
-    end)
-    rawOn = on
+-- Mouse to CEF without taking the keys: the bootstrap calls window.cef.ToggleCursor and holds it against Arizona.
+-- Switching off under an open Arizona window leaves the cursor to that window.
+local function cefCursor(on, why)
+    cursorOn = on
+    if not on and activeView then
+        logLine('курсор оставлен окну Arizona ' .. activeView .. ': ' .. why)
+        call('cursor(false,true)')
+        return
+    end
+    logLine(('курсор %s: %s'):format(on and 'вкл' or 'выкл', why))
+    call(('cursor(%s)'):format(tostring(on)))
 end
 
--- The launcher has several cursor paths and different builds listen to different ones.
-local function cefCursor(on)
-    if on or rawOn then rawPacket(on) end
-    pcall(function()
-        sampToggleCursor(on)
-        if on then sampToggleCursor(true) end
-    end)
-    pcall(function()
-        if on then
-            sampSetCursorMode(2)
-            sampSetCursorMode(1)
-        else
-            sampSetCursorMode(0)
-        end
-    end)
-end
-
--- Unknown means shown: a missing API must not turn into a restore every second.
-local function sampCursorShown()
-    local ok, res = pcall(sampIsCursorActive)
-    return not ok or res == true
+-- Reload and unload cannot wait for the outbox; destroy() gives the cursor back itself if it holds it.
+local function destroyNow(why)
+    if cursorOn then logLine('курсор выкл: ' .. why) end
+    cursorOn = false
+    evalcef(('window.__arzHub&&window.__arzHub.destroy(%s)'):format(tostring(activeView ~= nil)))
 end
 
 -- The cursor is never touched while the game is minimized or out of focus.
@@ -677,12 +677,10 @@ local BOOT_WAIT = 2        -- Seconds for the bootstrap to answer.
 local LOAD_WAIT = 5        -- Seconds for the iframe to load once open() went out.
 local LOST_AFTER = 5       -- Seconds without a heartbeat before the page counts as gone.
 local REFETCH_AFTER = 60   -- Seconds: an older list is fetched again when the window opens.
-local CURSOR_RETRY = 1     -- Seconds between cursor restores; a restore happens only when the cursor is actually gone.
 local FOCUS_GRACE = 2      -- Seconds after the game window gets focus back before the cursor is touched again.
-local YIELD_BACK = 0.5     -- Seconds: lets the server switch its cursor off before we switch ours on.
-local HIDE_NOTICE_AFTER = 1   -- Seconds hidden before the chat hears about it: RewardBanner and NpcDialog flash by faster.
-local HIDE_NOTICE_EVERY = 30  -- Seconds between two hide notices.
 local VK_ESCAPE = 0x1B
+local WM_KEYDOWN, WM_KEYUP = 0x100, 0x101
+local RESTORE_LOG_EVERY = 10  -- Seconds between two log lines about the cursor taken back from Arizona.
 
 local PAGE_DIR = DATA_DIR .. '\\hub'
 local PAGE_PATH = PAGE_DIR .. '\\hub.html'
@@ -705,19 +703,11 @@ local pageFailed = nil     -- ui.version whose download failed this session: ope
 local busy, results = {}, {}
 local bulk = nil           -- Update-all in progress: { i, n }.
 
-local activeView = nil     -- Arizona window open right now, from incoming event.setActiveView.
-local yielded = false      -- Our window is hidden under an Arizona window; the cursor is theirs then.
-local showAt = nil         -- When to take the cursor back after the Arizona window closed.
-local releaseRaw = false   -- Closed while hidden: our 220/25 "off" waits for the Arizona window to close.
-local releaseAt = nil
-local hideAt = nil
-local hideChecked = false
-local lastHideNotice = -math.huge
-local pendingOpen = false  -- /hub came while an Arizona window was open.
+local escHidden = false    -- Our Esc press is being hidden from the game; its release closes the window.
 local focused = true
 local focusBackAt = -math.huge
 local reapplyPending = false
-local lastCursor = 0
+local restores, restoreLoggedAt = 0, -math.huge
 
 local function post(kind, str)
     payloadSeq = payloadSeq + 1
@@ -861,25 +851,10 @@ local function closeWindow(reason)
     if not isOpen then return end
     isOpen = false
     call('close()')
-    if not yielded then
-        cefCursor(false)
-    elseif rawOn then
-        -- The Arizona window owns input now; our 220/25 "off" goes out once it closes.
-        releaseRaw = true
-    end
-    yielded, showAt, reapplyPending = false, nil, false
+    -- Under an Arizona window the cursor is that window's.
+    if cursorOn then cefCursor(false, 'закрытие окна') end
+    reapplyPending = false
     logLine('окно закрыто: ' .. reason)
-end
-
-local function takeCursor()
-    lastCursor = os.clock()
-    cefCursor(true)
-end
-
-local function yieldTo()
-    yielded, showAt = true, nil
-    hideAt, hideChecked = os.clock(), false
-    call('hide()')
 end
 
 local function cancelOpening()
@@ -928,11 +903,11 @@ local function stepOpen()
             opening = nil
             isOpen = true
             lastStat = os.clock()
-            if activeView then
-                yieldTo()
-            elseif focused then
-                takeCursor()
+            logLine('окно открыто')
+            if focused then
+                cefCursor(true, 'окно открылось')
             else
+                logLine('игра без фокуса: курсор возьмём после возврата фокуса')
                 reapplyPending = true
             end
             pushState()
@@ -1240,30 +1215,22 @@ local function onPageMessage(kind, data)
         pageLoaded = true
     elseif kind == 'stat' then
         lastStat = os.clock()
-    elseif kind == 'close' and yielded and data == 'page-esc' then
-        -- Esc under an Arizona window belongs to that window.
-        return
     elseif kind == 'close' then
         closeWindow(data)
     elseif kind == 'view' then
-        if data ~= '' then
-            if isOpen and not yielded then yieldTo() end
-            return
-        end
-        if isOpen and yielded then
-            yielded = false
-            showAt = os.clock() + YIELD_BACK
-            call('show()')
-        elseif releaseRaw then
-            releaseAt = os.clock() + YIELD_BACK
-        end
-        if pendingOpen then
-            pendingOpen = false
-            wantOpen = true
-        end
+        logLine('окно Arizona: ' .. (data ~= '' and data or 'закрыто'))
+        -- Arizona switched the cursor on over ours: only a fresh off -> on gives the keys back to the game.
+        -- When its window closes Arizona switches the cursor off, and the bootstrap's watchdog takes it back.
+        if data ~= '' and isOpen and cursorOn then cefCursor(true, 'открылось окно Arizona ' .. data) end
     elseif kind == 'retry' then
         pageFailed = nil
         refreshCatalog(false)
+    elseif kind == 'cursor' then
+        restores = restores + 1
+        if os.clock() - restoreLoggedAt >= RESTORE_LOG_EVERY then
+            logLine(('курсор вернули (%d раз): Arizona выключила его, пересчитывая свои окна'):format(restores))
+            restores, restoreLoggedAt = 0, os.clock()
+        end
     elseif kind == 'error' then
         logLine('ошибка в CEF: ' .. data)
     elseif ACTIONS[kind] then
@@ -1276,21 +1243,17 @@ end
 local function onCommand()
     if opening then cancelOpening() return end
     if isOpen then closeWindow('команда /hub') return end
-    if pendingOpen then
-        pendingOpen = false
-        chat(CANCEL_TEXT)
-        return
-    end
-    if activeView then
-        pendingOpen = true
-        chat(DEFER_TEXT)
-        return
-    end
     wantOpen = not wantOpen
 end
 
 local function onQueueItem(item)
-    if item.cmd then onCommand(item.cmd) else onPageMessage(item.kind, item.data) end
+    if item.trace then
+        logLine(item.trace)
+    elseif item.cmd then
+        onCommand()
+    else
+        onPageMessage(item.kind, item.data)
+    end
 end
 
 local socketRetried = false
@@ -1318,14 +1281,11 @@ local function stepWindow()
     local nowFocused = gameFocused()
     if nowFocused ~= focused then
         focused = nowFocused
+        logLine(focused and 'фокус игры вернулся' or 'игра потеряла фокус')
         if focused then
             focusBackAt = now
             reapplyPending = true
         end
-    end
-    if releaseAt and now >= releaseAt then
-        releaseAt, releaseRaw = nil, false
-        if not isOpen and rawOn then rawPacket(false) end
     end
     if not isOpen then return end
     -- No heartbeat is expected from a page while the game is minimized.
@@ -1334,28 +1294,11 @@ local function stepWindow()
         closeWindow('страница не отвечает ' .. LOST_AFTER .. ' с')
         return
     end
-    if yielded then
-        if not hideChecked and now - hideAt > HIDE_NOTICE_AFTER then
-            hideChecked = true
-            if now - lastHideNotice >= HIDE_NOTICE_EVERY then
-                lastHideNotice = now
-                chat(HIDE_TEXT)
-            end
-        end
-        return
-    end
     if not focused or now - focusBackAt <= FOCUS_GRACE then return end
-    if showAt then
-        if now >= showAt then
-            showAt = nil
-            takeCursor()
-        end
-    elseif reapplyPending then
-        -- After a restore SA-MP may claim the cursor is on while it is not drawn: one forced re-apply.
+    if reapplyPending then
+        -- After a restore the cursor may be claimed on while it is not drawn: one forced re-apply.
         reapplyPending = false
-        takeCursor()
-    elseif now - lastCursor > CURSOR_RETRY and not sampCursorShown() then
-        takeCursor()
+        cefCursor(true, 'после возврата фокуса')
     end
 end
 
@@ -1363,32 +1306,68 @@ end
 -- HOOKS (queue only)
 -- ============================================================================
 
--- Esc in a CEF window goes out as {220, 0, 27, 64}. Ours only while our window is open and no Arizona window sits on top.
+-- Cursor and window events are traced into the log: who holds the game's input is otherwise invisible.
+local function cursorTrace(prefix, str)
+    if not (str:find('ursor', 1, true) or str:find('ActiveView', 1, true)) then return end
+    queue[#queue + 1] = { trace = prefix .. str:gsub('%s+', ' '):sub(1, 160) }
+end
+
 local function readOutgoing(bs)
     raknetBitStreamIgnoreBits(bs, 8)
-    if raknetBitStreamReadInt8(bs) ~= 0 then return end
-    if not isOpen or activeView or raknetBitStreamReadInt8(bs) ~= VK_ESCAPE then return end
-    queue[#queue + 1] = { kind = 'close', data = 'server-esc' }
-    return false
+    if raknetBitStreamReadInt8(bs) ~= 18 then return end
+    local length = raknetBitStreamReadInt16(bs)
+    local str = raknetBitStreamReadString(bs, length)
+    if str then cursorTrace('клиент -> сервер: ', str) end
+end
+
+-- Esc toggles Arizona's own main menu even over our window, so while ours is on top the key never reaches the game.
+-- Both messages are hidden and the window closes on release, or the game is left thinking Esc is held.
+function onWindowMessage(msg, wparam)
+    if wparam ~= VK_ESCAPE or (msg ~= WM_KEYDOWN and msg ~= WM_KEYUP) then return end
+    if msg == WM_KEYUP then
+        if not escHidden then return end
+        escHidden = false
+        consumeWindowMessage(true, false)
+        queue[#queue + 1] = { kind = 'close', data = 'esc' }
+        return
+    end
+    if not isOpen or activeView then
+        -- A release lost to Alt+Tab must not keep the next Esc from the game.
+        escHidden = false
+        return
+    end
+    if not escHidden then
+        if sampIsChatInputActive() or sampIsDialogActive() or isPauseMenuActive() then return end
+        escHidden = true
+    end
+    consumeWindowMessage(true, false)
 end
 
 function onSendPacket(id, bs)
     if id ~= 220 then return end
     raknetBitStreamResetReadPointer(bs)
-    local ok, result = pcall(readOutgoing, bs)
+    pcall(readOutgoing, bs)
     raknetBitStreamResetReadPointer(bs)
-    if ok and result == false then return false end
 end
 
--- Tracks which Arizona window is open, so our window yields to it and never steals its Esc.
+-- Tracks which Arizona window is open: its Esc stays its own, and our cursor is switched again over it.
 local function readIncoming(bs)
     raknetBitStreamIgnoreBits(bs, 8)
-    if raknetBitStreamReadInt8(bs) ~= 17 then return end
+    local sub = raknetBitStreamReadInt8(bs)
+    if sub == 25 then
+        -- Another script or the server handing the whole keyboard to CEF.
+        raknetBitStreamIgnoreBits(bs, 32)
+        queue[#queue + 1] = { trace = 'пакет 25 (чужой): ' .. tostring(raknetBitStreamReadInt8(bs)) }
+        return
+    end
+    if sub ~= 17 then return end
     raknetBitStreamIgnoreBits(bs, 32)
     local length = raknetBitStreamReadInt16(bs)
     local encoded = raknetBitStreamReadInt8(bs)
     local str = (encoded ~= 0) and raknetBitStreamDecodeString(bs, length + encoded) or raknetBitStreamReadString(bs, length)
-    if not str or not str:find('event.setActiveView', 1, true) then return end
+    if not str then return end
+    cursorTrace('сервер -> клиент: ', str)
+    if not str:find('event.setActiveView', 1, true) then return end
     local arg = str:match([=[setActiveView['"]%s*,%s*[`'"](%b[])]=])
     if not arg then return end
     local view = arg:match('"([^"]*)"')
@@ -1410,13 +1389,7 @@ function onScriptTerminate(s)
     if s ~= thisScript() then return end
     for _, p in ipairs(clients) do pcall(p.c.close, p.c) end
     if server then pcall(server.close, server) end
-    if isOpen then
-        pcall(evalcef, 'window.__arzHub&&window.__arzHub.destroy()')
-        pcall(cefCursor, false)
-    elseif rawOn then
-        -- A standing 220/25 "on" outlives the script and keeps WASD from the game until a reconnect.
-        pcall(rawPacket, false)
-    end
+    if isOpen then pcall(destroyNow, 'выгрузка скрипта') end
 end
 
 function main()
@@ -1443,7 +1416,7 @@ function main()
         wait(0)
         if reloadPending then
             -- reload() drops whatever the outbox still holds, so the bootstrap is torn down right here.
-            if isOpen then evalcef('window.__arzHub&&window.__arzHub.destroy()') end
+            if isOpen then destroyNow('обновление менеджера') end
             closeWindow('обновление менеджера')
             thisScript():reload()
             return
