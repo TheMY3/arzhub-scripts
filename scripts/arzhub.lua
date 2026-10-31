@@ -1,6 +1,6 @@
 script_name('ArzHub')
 script_author('TheMY3')
-script_version('0.1.3')
+script_version('0.1.4')
 
 -- In-game manager for the ArzHub scripts: what is installed, what is out, install, update and remove in one click.
 -- Everything asynchronous is a step of main(): no lua_thread anywhere, hooks and download callbacks only queue or flag.
@@ -35,10 +35,14 @@ local DATA_DIR = ML_DIR .. '\\config\\ArzHub'
 local DL_DIR = DATA_DIR .. '\\dl'
 local CACHE_PATH = DATA_DIR .. '\\cache.json'
 local LOG_PATH = DATA_DIR .. '\\arzhub.log'
+local SELF_UPDATED_PATH = DATA_DIR .. '\\updated.txt'  -- Version the manager just updated itself to.
 
-local LOGIN_TEXT = 'Доступны обновления: %s. Открыть: /hub'
-local SOCKET_FAIL_TEXT = 'Окну не хватает библиотеки LuaSocket, и скачать её не вышло. Положи вручную в moonloader\\lib: ' .. SOCKET_LIB_URL
-local BOOT_FAIL_TEXT = 'Окно не открылось: игра не ответила. Попробуй ещё раз.'
+local LOGIN_SCRIPTS = 'Можно обновить %s. Открыть: /hub'
+local LOGIN_MANAGER = 'Вышла новая версия менеджера. Открыть: /hub'
+local LOGIN_BOTH = 'Вышла новая версия менеджера, и можно обновить %s. Открыть: /hub'
+local SELF_UPDATED_TEXT = 'Менеджер обновлён до %s.'
+local SOCKET_FAIL_TEXT = 'Окну не хватает библиотеки LuaSocket, и скачать её не вышло. Положите вручную в moonloader\\lib: ' .. SOCKET_LIB_URL
+local BOOT_FAIL_TEXT = 'Окно не открылось: игра не ответила. Попробуйте ещё раз.'
 local PORTS_BUSY_TEXT = 'Окну нужен свободный порт ' .. PORT_FIRST .. '-' .. PORT_LAST .. ', а все заняты другими программами.'
 
 -- ============================================================================
@@ -171,18 +175,13 @@ local dlFreeAt = 0
 local dlFrozen = false     -- Own file replaced: a reload is coming, a download started now would call back into an unloaded script.
 
 -- onDone(err) runs from main(): err is nil, 'timeout' or 'empty'; on success the file stays at dest.
--- onProgress(pct) runs from main() as well, at most every DL_GAP seconds.
-local function queueDownload(url, dest, onDone, onProgress)
-    dlQueue[#dlQueue + 1] = { url = url, dest = dest, onDone = onDone, onProgress = onProgress }
+local function queueDownload(url, dest, onDone)
+    dlQueue[#dlQueue + 1] = { url = url, dest = dest, onDone = onDone }
 end
 
 local function stepDownloads()
     local j = dlActive
     if j then
-        if j.onProgress and j.pct and j.pct ~= j.shownPct and os.clock() - j.shownAt >= DL_GAP then
-            j.shownPct, j.shownAt = j.pct, os.clock()
-            j.onProgress(j.pct)
-        end
         if not j.done and os.clock() - j.t0 < DL_TIMEOUT then return end
         dlActive = nil
         dlFreeAt = os.clock() + DL_GAP
@@ -200,16 +199,12 @@ local function stepDownloads()
     if dlFrozen or #dlQueue == 0 or os.clock() < dlFreeAt then return end
     j = table.remove(dlQueue, 1)
     removeIfExists(j.dest)
-    j.t0, j.shownAt = os.clock(), os.clock()
+    j.t0 = os.clock()
     dlActive = j
     local sep = j.url:find('?', 1, true) and '&' or '?'
     -- The file lands at dest only by STATUSEX_ENDDOWNLOAD; the callback just records what happened.
-    downloadUrlToFile(j.url .. sep .. 't=' .. os.time(), j.dest, function(_, status, done, total)
-        if status == moonloader.download_status.STATUS_DOWNLOADINGDATA and total and total > 0 then
-            j.pct = math.floor(done * 100 / total)
-        elseif status == moonloader.download_status.STATUSEX_ENDDOWNLOAD then
-            j.done = true
-        end
+    downloadUrlToFile(j.url .. sep .. 't=' .. os.time(), j.dest, function(_, status)
+        if status == moonloader.download_status.STATUSEX_ENDDOWNLOAD then j.done = true end
     end)
 end
 
@@ -299,15 +294,30 @@ local function cleanupTmp()
     end
 end
 
+-- 1 скрипт, 2 скрипта, 5 скриптов.
+local function scriptsCount(n)
+    local m10, m100 = n % 10, n % 100
+    if m10 == 1 and m100 ~= 11 then return n .. ' скрипт' end
+    if m10 >= 2 and m10 <= 4 and (m100 < 12 or m100 > 14) then return n .. ' скрипта' end
+    return n .. ' скриптов'
+end
+
+-- A count, not names: the window has the list.
 local function loginLine()
-    local names = {}
     local m = catalog.manager
     local remote = m and versionNum(m.version)
-    if remote and remote > (versionNum(thisScript().version) or 0) then names[#names + 1] = 'ArzHub ' .. m.version end
+    local manager = remote and remote > (versionNum(thisScript().version) or 0)
+    local n = 0
     for _, e in ipairs(catalog.list) do
-        if hasUpdate(e, scanEntry(e)) then names[#names + 1] = tostring(e.name or e.id) .. ' ' .. e.version end
+        if hasUpdate(e, scanEntry(e)) then n = n + 1 end
     end
-    if #names > 0 then chat(LOGIN_TEXT:format(table.concat(names, ', '))) end
+    if manager and n > 0 then
+        chat(LOGIN_BOTH:format(scriptsCount(n)))
+    elseif manager then
+        chat(LOGIN_MANAGER)
+    elseif n > 0 then
+        chat(LOGIN_SCRIPTS:format(scriptsCount(n)))
+    end
 end
 
 -- ============================================================================
@@ -949,14 +959,13 @@ end
 
 local OK_INSTALL = 'Установлено, скрипт запущен.'
 local OK_UPDATE = 'Обновлено до %s, скрипт перезапущен.'
-local OK_UPDATE_AUTOREBOOT = 'Обновлено до %s, ML-AutoReboot перезапустит скрипт.'
 local OK_KEEPNEW = 'Старая копия удалена.'
 local FAIL_TEXT = {
-    timeout = 'GitHub не ответил за ' .. DL_TIMEOUT .. ' с, повторите через пару минут.',
+    timeout = 'Сервер не ответил, повторите через пару минут.',
     empty = 'Файл не скачался, повторите через пару минут.',
-    broken = 'Скачался не тот файл, повторите через пару минут.',
-    stale = 'GitHub ещё отдаёт старую версию, повторите через пару минут.',
-    replace = 'Не удалось заменить файл: он занят или нет прав.',
+    broken = 'Файл скачался с ошибкой, повторите через пару минут.',
+    stale = 'Новая версия ещё не успела разойтись, повторите через пару минут.',
+    replace = 'Не удалось записать файл: он занят другой программой или нет прав.',
 }
 local FAIL_KEEP = ' Старая версия на месте.'
 local SITE_PATTERN = '^https://arzhub%.top/[%w%-%._~/]*$'
@@ -1028,7 +1037,7 @@ local function installEntry(e, done)
         pushState()
         if done then done(ok) end
     end
-    busy[id], results[id] = { pct = 0 }, nil
+    busy[id], results[id] = true, nil
     pushState()
     local tmp = target .. '.tmp'
     queueDownload(BASE_URL .. e.path, tmp, function(err)
@@ -1051,7 +1060,7 @@ local function installEntry(e, done)
             end
             -- ML-AutoReboot restarts a replaced file it watches; a second load of our own would race it.
             if autoReboot() and not loadedHere[target:lower()] then
-                finish(true, OK_UPDATE_AUTOREBOOT:format(e.version))
+                finish(true, OK_UPDATE:format(e.version))
                 return
             end
             local running = findLoaded(target)
@@ -1074,9 +1083,6 @@ local function installEntry(e, done)
         end
         loadScript(target)
         finish(true, scan.path and OK_UPDATE:format(e.version) or OK_INSTALL)
-    end, function(pct)
-        busy[id] = { pct = pct }
-        pushState()
     end)
 end
 
@@ -1132,7 +1138,7 @@ local function selfUpdate()
         results[UPDATE_SCRIPT_ID] = { ok = ok, text = text }
         pushState()
     end
-    busy[UPDATE_SCRIPT_ID], results[UPDATE_SCRIPT_ID] = { pct = 0 }, nil
+    busy[UPDATE_SCRIPT_ID], results[UPDATE_SCRIPT_ID] = true, nil
     pushState()
     queueDownload(BASE_URL .. m.path, tmp, function(err)
         if err then
@@ -1147,14 +1153,14 @@ local function selfUpdate()
             return
         end
         selfReplaced, dlFrozen = true, true
+        -- The new copy says so in the chat once it runs: the window goes away with the old one.
+        writeFile(SELF_UPDATED_PATH, m.version)
         if autoReboot() then
-            finish(true, OK_UPDATE_AUTOREBOOT:format(m.version))
+            finish(true, SELF_UPDATED_TEXT:format(m.version))
+            closeWindow('обновление менеджера, перезапустит ML-AutoReboot')
             return
         end
         reloadPending = true
-    end, function(pct)
-        busy[UPDATE_SCRIPT_ID] = { pct = pct }
-        pushState()
     end)
 end
 
@@ -1402,7 +1408,12 @@ function main()
     token = newToken()
     -- An installed LuaSocket needs no list: /hub must not wait for GitHub.
     if tryRequire() then socketState = socketReady() end
-    refreshCatalog(true)
+    -- Right after a self-update the new copy says so instead of the login line: the player was just in the window.
+    local updatedTo = readFile(SELF_UPDATED_PATH)
+    removeIfExists(SELF_UPDATED_PATH)
+    local justUpdated = updatedTo == thisScript().version
+    if justUpdated then chat(SELF_UPDATED_TEXT:format(updatedTo)) end
+    refreshCatalog(not justUpdated)
 
     while true do
         wait(0)
