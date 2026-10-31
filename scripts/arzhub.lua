@@ -1,6 +1,6 @@
 script_name('ArzHub')
 script_author('TheMY3')
-script_version('0.1.2')
+script_version('0.1.3')
 
 -- In-game manager for the ArzHub scripts: what is installed, what is out, install, update and remove in one click.
 -- Everything asynchronous is a step of main(): no lua_thread anywhere, hooks and download callbacks only queue or flag.
@@ -534,10 +534,34 @@ local BOOT_JS = [==[
   let frame = null;
   const decode = (s) => new TextDecoder('utf-8').decode(Uint8Array.from(atob(s), (c) => c.charCodeAt(0)));
   const take = (ch) => { const s = bufs[ch] || ''; delete bufs[ch]; return decode(s); };
+  // The page says where its header was grabbed; the frame follows the mouse over a cover in this document,
+  // so a mouse that leaves the frame mid-drag is not lost. Nothing is kept: a new window opens centred.
+  let cover = null;
+  const endDrag = () => { if (cover) { cover.remove(); cover = null; } };
+  const startDrag = (data) => {
+    const p = String(data).split(',').map(Number);
+    if (!frame || p.length !== 2 || p.some(isNaN)) return;
+    endDrag();
+    const r = frame.getBoundingClientRect();
+    cover = document.createElement('div');
+    const c = cover.style;
+    c.position = 'fixed'; c.left = '0'; c.top = '0'; c.width = '100vw'; c.height = '100vh';
+    c.zIndex = '2147483647'; c.cursor = 'move'; c.background = 'transparent';
+    cover.addEventListener('mousemove', (e) => {
+      if (!frame || !e.buttons) { endDrag(); return; }
+      const s = frame.style;
+      s.transform = 'none';
+      s.left = Math.max(0, Math.min(window.innerWidth - r.width, e.clientX - p[0])) + 'px';
+      s.top = Math.max(0, Math.min(window.innerHeight - r.height, e.clientY - p[1])) + 'px';
+    });
+    cover.addEventListener('mouseup', endDrag);
+    (document.body || document.documentElement).appendChild(cover);
+  };
   const onMessage = (e) => {
     if (!frame || e.source !== frame.contentWindow) return;
     const d = e.data;
     if (!d || d.arzhub !== true) return;
+    if (d.kind === 'drag') { startDrag(d.data); return; }
     send(String(d.kind), d.data);
   };
   window.addEventListener('message', onMessage);
@@ -592,7 +616,7 @@ local BOOT_JS = [==[
       wantCursor = !!on;
       if (on) { setCursor(false); setCursor(true); } else if (!leave) setCursor(false);
     },
-    close: () => { if (frame) { frame.remove(); frame = null; } },
+    close: () => { endDrag(); if (frame) { frame.remove(); frame = null; } },
     destroy: (leave) => {
       if (wantCursor) api.cursor(false, leave);
       clearInterval(watch);
@@ -1247,9 +1271,7 @@ local function onCommand()
 end
 
 local function onQueueItem(item)
-    if item.trace then
-        logLine(item.trace)
-    elseif item.cmd then
+    if item.cmd then
         onCommand()
     else
         onPageMessage(item.kind, item.data)
@@ -1306,20 +1328,6 @@ end
 -- HOOKS (queue only)
 -- ============================================================================
 
--- Cursor and window events are traced into the log: who holds the game's input is otherwise invisible.
-local function cursorTrace(prefix, str)
-    if not (str:find('ursor', 1, true) or str:find('ActiveView', 1, true)) then return end
-    queue[#queue + 1] = { trace = prefix .. str:gsub('%s+', ' '):sub(1, 160) }
-end
-
-local function readOutgoing(bs)
-    raknetBitStreamIgnoreBits(bs, 8)
-    if raknetBitStreamReadInt8(bs) ~= 18 then return end
-    local length = raknetBitStreamReadInt16(bs)
-    local str = raknetBitStreamReadString(bs, length)
-    if str then cursorTrace('клиент -> сервер: ', str) end
-end
-
 -- Esc toggles Arizona's own main menu even over our window, so while ours is on top the key never reaches the game.
 -- Both messages are hidden and the window closes on release, or the game is left thinking Esc is held.
 function onWindowMessage(msg, wparam)
@@ -1343,31 +1351,15 @@ function onWindowMessage(msg, wparam)
     consumeWindowMessage(true, false)
 end
 
-function onSendPacket(id, bs)
-    if id ~= 220 then return end
-    raknetBitStreamResetReadPointer(bs)
-    pcall(readOutgoing, bs)
-    raknetBitStreamResetReadPointer(bs)
-end
-
 -- Tracks which Arizona window is open: its Esc stays its own, and our cursor is switched again over it.
 local function readIncoming(bs)
     raknetBitStreamIgnoreBits(bs, 8)
-    local sub = raknetBitStreamReadInt8(bs)
-    if sub == 25 then
-        -- Another script or the server handing the whole keyboard to CEF.
-        raknetBitStreamIgnoreBits(bs, 32)
-        queue[#queue + 1] = { trace = 'пакет 25 (чужой): ' .. tostring(raknetBitStreamReadInt8(bs)) }
-        return
-    end
-    if sub ~= 17 then return end
+    if raknetBitStreamReadInt8(bs) ~= 17 then return end
     raknetBitStreamIgnoreBits(bs, 32)
     local length = raknetBitStreamReadInt16(bs)
     local encoded = raknetBitStreamReadInt8(bs)
     local str = (encoded ~= 0) and raknetBitStreamDecodeString(bs, length + encoded) or raknetBitStreamReadString(bs, length)
-    if not str then return end
-    cursorTrace('сервер -> клиент: ', str)
-    if not str:find('event.setActiveView', 1, true) then return end
+    if not str or not str:find('event.setActiveView', 1, true) then return end
     local arg = str:match([=[setActiveView['"]%s*,%s*[`'"](%b[])]=])
     if not arg then return end
     local view = arg:match('"([^"]*)"')

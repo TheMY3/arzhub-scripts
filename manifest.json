@@ -391,7 +391,7 @@
       "name": "ArzHub",
       "filename": "ArzHub.lua",
       "legacy_filenames": [],
-      "version": "0.1.2",
+      "version": "0.1.3",
       "path": "scripts/arzhub.lua",
       "topic": "",
       "actual": true,
@@ -415,12 +415,18 @@
             "С открытым менеджером можно ходить, в том числе с открытым телефоном.",
             "Esc закрывает менеджер и больше не ломает управление."
           ]
+        },
+        {
+          "version": "0.1.3",
+          "notes": [
+            "Окно можно двигать за шапку."
+          ]
         }
       ]
     }
   ],
   "ui": {
-    "version": "1.1.0",
+    "version": "1.2.0",
     "path": "hub/hub.html"
   },
   "deps": {
