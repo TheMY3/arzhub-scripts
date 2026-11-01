@@ -1,6 +1,6 @@
 script_name('ArzHub')
 script_author('TheMY3')
-script_version('0.1.7')
+script_version('0.1.8')
 
 -- In-game manager for the ArzHub scripts: what is installed, what is out, install, update and remove in one click.
 -- Everything asynchronous is a step of main(): no lua_thread anywhere, hooks and download callbacks only queue or flag.
@@ -1142,7 +1142,9 @@ local function selfUpdate()
         -- The new copy says so in the chat once it runs: the window goes away with the old one.
         writeFile(SELF_UPDATED_PATH, m.version)
         if autoReboot() then
+            -- ML-AutoReboot may reload us before the outbox drains: a queued close would leave the window behind.
             finish(true, SELF_UPDATED_TEXT:format(m.version))
+            if isOpen then destroyNow('обновление менеджера') end
             closeWindow('обновление менеджера, перезапустит ML-AutoReboot')
             return
         end
@@ -1374,7 +1376,8 @@ function onScriptTerminate(s)
     if s ~= thisScript() then return end
     for _, p in ipairs(clients) do pcall(p.c.close, p.c) end
     if server then pcall(server.close, server) end
-    if isOpen then pcall(destroyNow, 'выгрузка скрипта') end
+    -- Always: a close still waiting in the outbox dies with the script and would leave the window behind.
+    pcall(destroyNow, 'выгрузка скрипта')
 end
 
 function main()
