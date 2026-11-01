@@ -402,7 +402,7 @@
       "id": "arzhub",
       "name": "ArzHub",
       "filename": "ArzHub.lua",
-      "version": "0.1.10",
+      "version": "0.1.11",
       "path": "scripts/arzhub.lua",
       "topic": "",
       "actual": true,
@@ -474,6 +474,12 @@
           "version": "0.1.10",
           "notes": [
             "Скрипты в списке по порядку: сначала установленные, по алфавиту."
+          ]
+        },
+        {
+          "version": "0.1.11",
+          "notes": [
+            "Команда /hub update обновляет менеджер без окна."
           ]
         }
       ],

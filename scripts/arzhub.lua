@@ -1,6 +1,6 @@
 script_name('ArzHub')
 script_author('TheMY3')
-script_version('0.1.10')
+script_version('0.1.11')
 
 -- In-game manager for the ArzHub scripts: what is installed, what is out, install, update and remove in one click.
 -- Everything asynchronous is a step of main(): no lua_thread anywhere, hooks and download callbacks only queue or flag.
@@ -45,7 +45,13 @@ local LOAD_MANAGER = ', вышла {FFB48A}v%s{FFFFFF}. Обновить: {FFB48
 local LOAD_OPEN = '. Открыть: {FFB48A}/hub'
 local SELF_UPDATED_TEXT = 'Менеджер обновлён до %s.'
 local SOCKET_FAIL_TEXT = 'Не удалось скачать библиотеку LuaSocket для окна. Скачайте архив и распакуйте его в папку moonloader: {FFB48A}' .. SOCKET_LIB_URL
-local BOOT_FAIL_TEXT = 'Окно не открылось: игра не ответила. Попробуйте ещё раз.'
+-- Support hears about a breakage; /hub update then delivers the fix to a player whose window cannot open.
+local BOOT_FAIL_TEXT = 'Окно не открылось. Попробуйте ещё раз или обновите менеджер: {FFB48A}/hub update{FFFFFF}. Не помогает - напишите: {FFB48A}https://arzhub.top/support'
+local UPDATE_START_TEXT = 'Скачиваю {FFB48A}v%s{FFFFFF}...'
+local UPDATE_NONE_TEXT = 'У менеджера последняя версия {FFB48A}v%s{FFFFFF}.'
+local UPDATE_OFFLINE_TEXT = 'Не удалось проверить обновления, повторите через пару минут.'
+local UPDATE_BUSY_TEXT = 'Менеджер уже обновляется.'
+local HELP_TEXT = 'Команды: {FFB48A}/hub{FFFFFF} - окно, {FFB48A}/hub update{FFFFFF} - обновить менеджер.'
 local PORTS_BUSY_TEXT = 'Окну нужен свободный порт ' .. PORT_FIRST .. '-' .. PORT_LAST .. ', а все заняты другими программами.'
 
 -- ============================================================================
@@ -1123,7 +1129,8 @@ local function updateAll()
     nextOne()
 end
 
-local function selfUpdate()
+-- announce: started by /hub update, so a failure goes to the chat too: the window may not be there at all.
+local function selfUpdate(announce)
     local m = catalog.manager
     local own = thisScript().version
     if not m or not versionNum(m.version) or versionNum(m.version) <= (versionNum(own) or 0) or type(m.path) ~= 'string' then return end
@@ -1133,6 +1140,7 @@ local function selfUpdate()
         busy[UPDATE_SCRIPT_ID] = nil
         results[UPDATE_SCRIPT_ID] = { ok = ok, text = text }
         pushState()
+        if announce and not ok then chat(text) end
     end
     busy[UPDATE_SCRIPT_ID], results[UPDATE_SCRIPT_ID] = true, nil
     pushState()
@@ -1216,6 +1224,8 @@ end
 -- MAIN
 -- ============================================================================
 
+local updateAsked = false   -- /hub update waits for a fresh list.
+
 onCatalog = function(err, login)
     if err then
         logLine('манифест не скачался: ' .. err)
@@ -1227,6 +1237,19 @@ onCatalog = function(err, login)
     end
     if login then loginLine() end
     ensureSocket()
+    if updateAsked then
+        updateAsked = false
+        local m = catalog and catalog.manager
+        local remote = m and versionNum(m.version)
+        if err or not m then
+            chat(UPDATE_OFFLINE_TEXT)
+        elseif remote and remote > (versionNum(thisScript().version) or 0) then
+            chat(UPDATE_START_TEXT:format(m.version))
+            selfUpdate(true)
+        else
+            chat(UPDATE_NONE_TEXT:format(thisScript().version))
+        end
+    end
     -- The fallback page has nothing to show once the list is back: the real one replaces it.
     if not err and isOpen and openPageKey == 'fallback' and catalog.ui then
         closeWindow('пришёл список, открываю настоящую страницу')
@@ -1268,7 +1291,20 @@ local function onPageMessage(kind, data)
     end
 end
 
-local function onCommand()
+-- The manager's own update without the window: the way out when Arizona breaks CEF.
+local function onUpdateCommand()
+    if updateAsked or busy[UPDATE_SCRIPT_ID] or selfReplaced then
+        chat(UPDATE_BUSY_TEXT)
+        return
+    end
+    updateAsked = true
+    refreshCatalog(false)
+end
+
+local function onCommand(arg)
+    arg = tostring(arg or ''):match('^%s*(.-)%s*$'):lower()
+    if arg == 'update' then onUpdateCommand() return end
+    if arg ~= '' then chat(HELP_TEXT) return end
     if opening then cancelOpening() return end
     if isOpen then closeWindow('команда /hub') return end
     wantOpen = not wantOpen
@@ -1276,7 +1312,7 @@ end
 
 local function onQueueItem(item)
     if item.cmd then
-        onCommand()
+        onCommand(item.arg)
     else
         onPageMessage(item.kind, item.data)
     end
@@ -1400,8 +1436,8 @@ function main()
     if fileSize(LOG_PATH) > LOG_LIMIT then removeIfExists(LOG_PATH) end
     logLine('--- ArzHub v' .. thisScript().version)
 
-    sampRegisterChatCommand('hub', function() queue[#queue + 1] = { cmd = 'hub' } end)
-    sampRegisterChatCommand('arzhub', function() queue[#queue + 1] = { cmd = 'arzhub' } end)
+    sampRegisterChatCommand('hub', function(arg) queue[#queue + 1] = { cmd = 'hub', arg = arg } end)
+    sampRegisterChatCommand('arzhub', function(arg) queue[#queue + 1] = { cmd = 'arzhub', arg = arg } end)
 
     -- A fresh bootstrap per script load, so an updated script never meets its old JS in the page.
     bootVersion = thisScript().version .. '-' .. os.time()
