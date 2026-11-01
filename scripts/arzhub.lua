@@ -1,6 +1,6 @@
 script_name('ArzHub')
 script_author('TheMY3')
-script_version('0.1.11')
+script_version('0.2.0')
 
 -- In-game manager for the ArzHub scripts: what is installed, what is out, install, update and remove in one click.
 -- Everything asynchronous is a step of main(): no lua_thread anywhere, hooks and download callbacks only queue or flag.
@@ -19,22 +19,29 @@ pcall(ffi.cdef, [[
 -- The site's orange: the tag in its light end, highlights (versions, commands) in the peach of the window's command chips.
 local TAG = '{FFA31A}[ArzHub]{FFFFFF}: '
 local UPDATE_SCRIPT_ID = 'arzhub'
-local BASE_URL = 'https://raw.githubusercontent.com/TheMY3/arzhub-scripts/main/'
+-- Everything comes from the site: it proxies the arzhub-scripts repository and sees every start and download.
+local BASE_URL = 'https://arzhub.top/hub/'
 local MANIFEST_URL = BASE_URL .. 'manifest.json'
-local RELEASES_URL = 'https://github.com/TheMY3/arzhub-scripts/releases'
+local RELEASES_URL = 'https://arzhub.top/hub'
+local EVENT_URL = 'https://arzhub.top/api/hub/event'
 
-local SOCKET_LIB_URL = 'https://github.com/TheMY3/arzhub-scripts/raw/main/lib/luasocket.zip'
+local SOCKET_LIB_URL = BASE_URL .. 'lib/luasocket.zip'
 local PORT_FIRST, PORT_LAST = 38260, 38270 -- Local HTTP channel from the page, first free port wins.
 local CLIENT_TIMEOUT = 2 -- Seconds a page connection may take to send its request line.
 
 local DL_TIMEOUT = 15 -- Seconds per download.
 local DL_GAP = 0.25   -- Seconds between downloads: a second downloadUrlToFile right after another fails with "device or resource busy".
+local DL_TRIES = 3    -- Starts of one download that may throw before it gives up.
+local EVENT_TIMEOUT = 5    -- Seconds for a stats request: it holds the only download slot meanwhile.
+local EVENT_QUEUE_MAX = 20
+local DL_BUSY_WAIT = 1 -- Seconds before a start that threw is tried again.
 local LOG_LIMIT = 512 * 1024
 
 local ML_DIR = getWorkingDirectory()
 local DATA_DIR = ML_DIR .. '\\config\\ArzHub'
 local DL_DIR = DATA_DIR .. '\\dl'
 local CACHE_PATH = DATA_DIR .. '\\cache.json'
+local ID_PATH = DATA_DIR .. '\\id.txt'  -- Anonymous install id: kept apart from the cache, so clearing it is not a new install.
 local LOG_PATH = DATA_DIR .. '\\arzhub.log'
 local SELF_UPDATED_PATH = DATA_DIR .. '\\updated.txt'  -- Version the manager just updated itself to.
 
@@ -120,6 +127,10 @@ local function versionNum(v)
     return tonumber(a) * 1000000 + tonumber(b) * 1000 + tonumber(c)
 end
 
+local function urlEncode(s)
+    return (tostring(s):gsub('[^%w%-%._~]', function(c) return ('%%%02X'):format(c:byte()) end))
+end
+
 local function urlDecode(s)
     return (s:gsub('%%(%x%x)', function(h) return string.char(tonumber(h, 16)) end))
 end
@@ -179,11 +190,13 @@ end
 -- ============================================================================
 
 local dlQueue = {}
+local evQueue = {}         -- Stats requests: they take the slot only when no script waits for it.
+local installId = nil
 local dlActive = nil
 local dlFreeAt = 0
 local dlFrozen = false     -- Own file replaced: a reload is coming, a download started now would call back into an unloaded script.
 
--- onDone(err) runs from main(): err is nil, 'timeout' or 'empty'; on success the file stays at dest.
+-- onDone(err) runs from main(): err is nil, 'timeout', 'empty' or 'busy'; on success the file stays at dest.
 local function queueDownload(url, dest, onDone)
     dlQueue[#dlQueue + 1] = { url = url, dest = dest, onDone = onDone }
 end
@@ -191,7 +204,7 @@ end
 local function stepDownloads()
     local j = dlActive
     if j then
-        if not j.done and os.clock() - j.t0 < DL_TIMEOUT then return end
+        if not j.done and os.clock() - j.t0 < (j.timeout or DL_TIMEOUT) then return end
         dlActive = nil
         dlFreeAt = os.clock() + DL_GAP
         if not j.done then
@@ -205,16 +218,47 @@ local function stepDownloads()
         end
         return
     end
-    if dlFrozen or #dlQueue == 0 or os.clock() < dlFreeAt then return end
-    j = table.remove(dlQueue, 1)
+    if dlFrozen or os.clock() < dlFreeAt then return end
+    j = table.remove(dlQueue, 1) or table.remove(evQueue, 1)
+    if not j then return end
     removeIfExists(j.dest)
     j.t0 = os.clock()
     dlActive = j
+    -- Every request carries the install id: the site counts downloads per install.
     local sep = j.url:find('?', 1, true) and '&' or '?'
+    if installId then sep = sep .. 'i=' .. installId .. '&' end
     -- The file lands at dest only by STATUSEX_ENDDOWNLOAD; the callback just records what happened.
-    downloadUrlToFile(j.url .. sep .. 't=' .. os.time(), j.dest, function(_, status)
+    -- It throws «device or resource busy» when the native downloader is not free, and unguarded that kills the script.
+    local ok, err = pcall(downloadUrlToFile, j.url .. sep .. 't=' .. os.time(), j.dest, function(_, status)
         if status == moonloader.download_status.STATUSEX_ENDDOWNLOAD then j.done = true end
     end)
+    if ok then return end
+    dlActive = nil
+    dlFreeAt = os.clock() + DL_BUSY_WAIT
+    j.tries = (j.tries or 0) + 1
+    logLine(('загрузка не началась (%d из %d): %s'):format(j.tries, DL_TRIES, tostring(err)))
+    if j.event then
+        j.onDone('busy')
+    elseif j.tries < DL_TRIES then
+        table.insert(dlQueue, 1, j)
+    else
+        j.onDone('busy')
+    end
+end
+
+-- Anonymous stats: one GET, the answer is not read, one try; fields sorted so the URL is stable.
+local function queueEvent(name, fields)
+    if #evQueue >= EVENT_QUEUE_MAX then return end
+    local q = { 'e=' .. name, 'v=' .. urlEncode(thisScript().version) }
+    local keys = {}
+    for k in pairs(fields or {}) do keys[#keys + 1] = k end
+    table.sort(keys)
+    for _, k in ipairs(keys) do q[#q + 1] = k .. '=' .. urlEncode(fields[k]) end
+    local dest = DL_DIR .. '\\event.tmp'
+    evQueue[#evQueue + 1] = {
+        url = EVENT_URL .. '?' .. table.concat(q, '&'), dest = dest, event = true, timeout = EVENT_TIMEOUT,
+        onDone = function() removeIfExists(dest) end,
+    }
 end
 
 -- ============================================================================
@@ -289,9 +333,10 @@ local function loadCache()
 end
 
 -- onDone(err): nil on success, else the download error or 'broken'. A broken answer leaves the cache alone.
-local function fetchManifest(onDone)
+-- query: extra fields for the site; the one at load marks a start (see bootQuery).
+local function fetchManifest(onDone, query)
     local tmp = DL_DIR .. '\\manifest.json.tmp'
-    queueDownload(MANIFEST_URL, tmp, function(err)
+    queueDownload(MANIFEST_URL .. (query and ('?' .. query) or ''), tmp, function(err)
         if err then onDone(err) return end
         local body = readFile(tmp)
         removeIfExists(tmp)
@@ -319,6 +364,43 @@ local function updatesFor(n)
     if n == 1 then return 'Доступно обновление для ' .. count .. ' скрипта' end
     local one = n % 10 == 1 and n % 100 ~= 11
     return 'Доступны обновления для ' .. count .. (one and ' скрипта' or ' скриптов')
+end
+
+-- Installed scripts as «id:version,…» for the start fields; before the first list of a load it reads the cached one.
+local function installedField()
+    local list = catalog and catalog.list
+    if not list then
+        local ok, data = pcall(decodeJson, readFile(CACHE_PATH) or '')
+        local m = ok and type(data) == 'table' and data.manifest
+        list = type(m) == 'table' and type(m.scripts) == 'table' and m.scripts or {}
+    end
+    local out = {}
+    for _, e in ipairs(list) do
+        if type(e) == 'table' and type(e.id) == 'string' and e.id ~= UPDATE_SCRIPT_ID then
+            local scan = scanEntry(e)
+            if scan.path then out[#out + 1] = e.id .. ':' .. (scan.localVersion or '?') end
+        end
+    end
+    return table.concat(out, ',')
+end
+
+-- Start fields: the list request at load is the start, no separate event. Nothing names the player.
+local function startQuery()
+    local f = {
+        boot = '1', v = thisScript().version, s = installedField(),
+        up = tostring(math.floor(os.clock())),
+        ui = (readFile(DATA_DIR .. '\\hub\\version.txt') or ''):match('^[%d%.]+') or '',
+    }
+    local okMl, ml = pcall(getMoonloaderVersion)
+    if okMl and ml then f.ml = tostring(ml) end
+    local okSrv, ip, port = pcall(sampGetCurrentServerAddress)
+    if okSrv and type(ip) == 'string' and ip ~= '' then f.srv = ip .. ':' .. tostring(port) end
+    local keys = {}
+    for k in pairs(f) do keys[#keys + 1] = k end
+    table.sort(keys)
+    local q = {}
+    for _, k in ipairs(keys) do q[#q + 1] = k .. '=' .. urlEncode(f[k]) end
+    return table.concat(q, '&')
 end
 
 local justUpdated = false   -- This copy was just put in place by a self-update.
@@ -471,10 +553,10 @@ local function pollServer()
     end
 end
 
-local function newToken()
+local function newToken(len)
     math.randomseed(os.time() + math.floor(os.clock() * 1000000) + (tonumber(tostring({}):match('0x(%x+)') or '0', 16) or 0))
     local out = {}
-    for i = 1, 16 do out[i] = ('%x'):format(math.random(0, 15)) end
+    for i = 1, len or 16 do out[i] = ('%x'):format(math.random(0, 15)) end
     return table.concat(out)
 end
 
@@ -866,6 +948,7 @@ local onCatalog
 
 -- A retry while a fetch is running is not dropped: it runs right after, against the network as it is now.
 local refetchPending = false
+local bootQuery = nil      -- Start fields for the first list request of this load; sent once.
 
 local function refreshCatalog(login)
     if manifestFetching then
@@ -873,6 +956,8 @@ local function refreshCatalog(login)
         return
     end
     manifestFetching = true
+    local query = login and bootQuery or nil
+    if query then bootQuery = nil end
     fetchManifest(function(err)
         manifestFetching = false
         onCatalog(err, login)
@@ -880,7 +965,7 @@ local function refreshCatalog(login)
             refetchPending = false
             refreshCatalog(false)
         end
-    end)
+    end, query)
 end
 
 local function closeWindow(reason)
@@ -908,6 +993,8 @@ local function openWindow()
     end)
 end
 
+local openSent = false     -- The «open» stat goes once per load.
+
 local function stepOpen()
     local o = opening
     if not o then return end
@@ -916,6 +1003,7 @@ local function stepOpen()
             if os.clock() > o.deadline then
                 opening = nil
                 chat(BOOT_FAIL_TEXT)
+                queueEvent('window_fail', { stage = 'boot' })
             end
             return
         end
@@ -940,6 +1028,10 @@ local function stepOpen()
             isOpen = true
             lastStat = os.clock()
             logLine('окно открыто')
+            if not openSent then
+                openSent = true
+                queueEvent('open')
+            end
             if focused then
                 cefCursor(true, 'окно открылось')
             else
@@ -951,6 +1043,7 @@ local function stepOpen()
         elseif os.clock() > o.deadline then
             cancelOpening()
             chat(BOOT_FAIL_TEXT)
+            queueEvent('window_fail', { stage = 'load' })
         end
     end
 end
@@ -968,6 +1061,7 @@ local FAIL_TEXT = {
     broken = 'Файл скачался с ошибкой, повторите через пару минут.',
     stale = 'Новая версия ещё не успела разойтись, повторите через пару минут.',
     replace = 'Не удалось записать файл: он занят другой программой или нет прав.',
+    busy = 'Загрузка не началась, повторите через пару минут.',
 }
 local FAIL_KEEP = ' Старая версия на месте.'
 local SITE_PATTERN = '^https://arzhub%.top/[%w%-%._~/]*$'
@@ -1033,10 +1127,14 @@ local function installEntry(e, done)
     local scan = scanEntry(e)
     local target = ML_DIR .. '\\' .. e.filename
     local keep = scan.path and FAIL_KEEP or ''
-    local function finish(ok, text)
+    local function finish(ok, text, err)
         busy[id] = nil
         results[id] = { ok = ok, text = text }
         pushState()
+        queueEvent(scan.path and 'update' or 'install', {
+            id = id, from = scan.path and (scan.localVersion or '?') or nil, to = e.version,
+            ok = ok and '1' or '0', err = err, bulk = done and '1' or nil,
+        })
         if done then done(ok) end
     end
     busy[id], results[id] = true, nil
@@ -1045,19 +1143,19 @@ local function installEntry(e, done)
     queueDownload(BASE_URL .. e.path, tmp, function(err)
         if err then
             removeIfExists(tmp)
-            finish(false, FAIL_TEXT[err] .. keep)
+            finish(false, FAIL_TEXT[err] .. keep, err)
             return
         end
         local bad = checkBuild(tmp, e.version, scan.localVersion)
         if bad then
             removeIfExists(tmp)
-            finish(false, FAIL_TEXT[bad] .. keep)
+            finish(false, FAIL_TEXT[bad] .. keep, bad)
             return
         end
         if scan.path == target then
             if not atomicReplace(tmp, target) then
                 removeIfExists(tmp)
-                finish(false, FAIL_TEXT.replace .. keep)
+                finish(false, FAIL_TEXT.replace .. keep, 'replace')
                 return
             end
             -- ML-AutoReboot restarts a replaced file it watches; a second load of our own would race it.
@@ -1073,7 +1171,7 @@ local function installEntry(e, done)
         end
         if not os.rename(tmp, target) then
             removeIfExists(tmp)
-            finish(false, FAIL_TEXT.replace .. keep)
+            finish(false, FAIL_TEXT.replace .. keep, 'replace')
             return
         end
         -- Found under another name: that copy stops and is put aside, the main name always loads.
@@ -1090,6 +1188,7 @@ end
 
 local function deleteEntry(e)
     local scan = scanEntry(e)
+    if scan.path then queueEvent('delete', { id = e.id, from = scan.localVersion or '?' }) end
     for _, p in ipairs({ scan.path, scan.alt }) do
         local running = findLoaded(p)
         if running then running:unload() end
@@ -1136,24 +1235,25 @@ local function selfUpdate(announce)
     if not m or not versionNum(m.version) or versionNum(m.version) <= (versionNum(own) or 0) or type(m.path) ~= 'string' then return end
     local target = thisScript().path
     local tmp = target .. '.tmp'
-    local function finish(ok, text)
+    local function finish(ok, text, err)
         busy[UPDATE_SCRIPT_ID] = nil
         results[UPDATE_SCRIPT_ID] = { ok = ok, text = text }
         pushState()
         if announce and not ok then chat(text) end
+        queueEvent('self', { from = own, to = m.version, ok = ok and '1' or '0', err = err, via = announce and 'command' or 'window' })
     end
     busy[UPDATE_SCRIPT_ID], results[UPDATE_SCRIPT_ID] = true, nil
     pushState()
     queueDownload(BASE_URL .. m.path, tmp, function(err)
         if err then
             removeIfExists(tmp)
-            finish(false, FAIL_TEXT[err] .. FAIL_KEEP)
+            finish(false, FAIL_TEXT[err] .. FAIL_KEEP, err)
             return
         end
         local bad = checkBuild(tmp, m.version, own)
         if bad or not atomicReplace(tmp, target) then
             removeIfExists(tmp)
-            finish(false, FAIL_TEXT[bad or 'replace'] .. FAIL_KEEP)
+            finish(false, FAIL_TEXT[bad or 'replace'] .. FAIL_KEEP, bad or 'replace')
             return
         end
         selfReplaced, dlFrozen = true, true
@@ -1326,16 +1426,18 @@ local function stepWindow()
             wantOpen, socketRetried = false, false
             openWindow()
         elseif socketState == 'missing' and not socketRetried then
-            -- One more try per /hub: the list or GitHub may be back by now.
+            -- One more try per /hub: the list or the site may be back by now.
             socketRetried = true
             socketState = nil
             refreshCatalog(false)
         elseif socketState == 'failed' or socketState == 'missing' then
+            queueEvent('socket_fail', { state = socketState })
             wantOpen, socketRetried = false, false
             chat(SOCKET_FAIL_TEXT)
         elseif socketState == 'busy' then
             wantOpen = false
             chat(PORTS_BUSY_TEXT)
+            queueEvent('socket_fail', { state = 'busy' })
         end
     end
     stepOpen()
@@ -1442,12 +1544,18 @@ function main()
     -- A fresh bootstrap per script load, so an updated script never meets its old JS in the page.
     bootVersion = thisScript().version .. '-' .. os.time()
     token = newToken()
-    -- An installed LuaSocket needs no list: /hub must not wait for GitHub.
+    installId = (readFile(ID_PATH) or ''):match('^%x+$')
+    if not installId or #installId ~= 32 then
+        installId = newToken(32)
+        writeFile(ID_PATH, installId)
+    end
+    -- An installed LuaSocket needs no list: /hub must not wait for the site.
     if tryRequire() then socketState = socketReady() end
     -- Right after a self-update the load line says «Обновлён до» instead of «Загружен».
     local updatedTo = readFile(SELF_UPDATED_PATH)
     removeIfExists(SELF_UPDATED_PATH)
     justUpdated = updatedTo == thisScript().version
+    bootQuery = startQuery()
     refreshCatalog(true)
 
     while true do
