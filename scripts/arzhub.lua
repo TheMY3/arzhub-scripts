@@ -1,6 +1,6 @@
 script_name('ArzHub')
 script_author('TheMY3')
-script_version('0.1.9')
+script_version('0.1.10')
 
 -- In-game manager for the ArzHub scripts: what is installed, what is out, install, update and remove in one click.
 -- Everything asynchronous is a step of main(): no lua_thread anywhere, hooks and download callbacks only queue or flag.
@@ -309,9 +309,10 @@ end
 
 -- «Доступно обновление для 1 скрипта», «Доступны обновления для 3 скриптов», «… для 21 скрипта».
 local function updatesFor(n)
-    if n == 1 then return 'Доступно обновление для 1 скрипта' end
+    local count = '{FFB48A}' .. n .. '{FFFFFF}'
+    if n == 1 then return 'Доступно обновление для ' .. count .. ' скрипта' end
     local one = n % 10 == 1 and n % 100 ~= 11
-    return 'Доступны обновления для ' .. n .. (one and ' скрипта' or ' скриптов')
+    return 'Доступны обновления для ' .. count .. (one and ' скрипта' or ' скриптов')
 end
 
 local justUpdated = false   -- This copy was just put in place by a self-update.

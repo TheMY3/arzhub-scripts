@@ -402,7 +402,7 @@
       "id": "arzhub",
       "name": "ArzHub",
       "filename": "ArzHub.lua",
-      "version": "0.1.9",
+      "version": "0.1.10",
       "path": "scripts/arzhub.lua",
       "topic": "",
       "actual": true,
@@ -469,13 +469,19 @@
             "При запуске в чате строка о загрузке менеджера и о доступных обновлениях.",
             "Чат в цветах сайта."
           ]
+        },
+        {
+          "version": "0.1.10",
+          "notes": [
+            "Скрипты в списке по порядку: сначала установленные, по алфавиту."
+          ]
         }
       ],
       "alt_filenames": []
     }
   ],
   "ui": {
-    "version": "1.4.0",
+    "version": "1.5.0",
     "path": "hub/hub.html"
   },
   "deps": {
