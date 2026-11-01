@@ -89,7 +89,7 @@
       "id": "crypto-collector",
       "name": "Crypto Collector",
       "filename": "[TheMY3] Crypto Collector.lua",
-      "version": "2.5.2",
+      "version": "2.5.3",
       "path": "scripts/crypto-collector.lua",
       "topic": "https://www.blast.hk/threads/243868/",
       "actual": true,
@@ -112,6 +112,12 @@
           "notes": [
             "Понятнее сообщения при неудачном обновлении: что случилось и когда повторить.",
             "Надёжнее перезапуск после обновления: больше не перезапускается дважды вместе с ML-AutoReboot."
+          ]
+        },
+        {
+          "version": "2.5.3",
+          "notes": [
+            "Мелкие исправления и доработки."
           ]
         }
       ],

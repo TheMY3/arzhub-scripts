@@ -1,6 +1,6 @@
 script_author('TheMY3')
 script_name('[TM] Crypto Collector')
-script_version('2.5.2')
+script_version('2.5.3')
 
 -- Тема на форуме (актуальная версия, обсуждение): https://www.blast.hk/threads/243868/
 
@@ -396,8 +396,10 @@ end
 ---@param status 'success' | 'fail'
 local function writeLastRunFile(status)
 	local houses = {}
+	local cardLists = {}  -- Parallel to houses, attached only for the outbox.
 	for _, house in ipairs(collectingHouses) do
 		if house.hasCards then
+			table.insert(cardLists, house.cardList or {})
 			table.insert(houses, {
 				name = house.name,
 				collected = {btc = house.collected.btc, asc = house.collected.asc},
@@ -423,6 +425,11 @@ local function writeLastRunFile(status)
 	-- History first: last-run.json is an outbox the Companion consumes and deletes, while these two are the copies that stay on this machine.
 	appendHistory(run)
 	updateDaily(run)
+
+	-- Per-card detail is for arzhub only: it would bloat history.jsonl, and nothing local reads it.
+	for i, house in ipairs(houses) do
+		house.cardList = cardLists[i]
+	end
 
 	local dir = configDir()
 	-- Write to a temp file first so readers never see a half-written JSON.
@@ -2229,10 +2236,29 @@ function sampev.onShowDialog(id, style, rawTitle, button1, button2, rawText)
 			local soonService = 0
 			local pausedWithCoolant = 0
 			local profitableCards = 0
+			local cardList = {}  -- Per-card snapshot for last-run.json, taken before anything is withdrawn or started.
+			local rack = nil  -- Shelf numbers restart in every rack, so the "Стойка №N" header above them is part of the card id.
 
 			for n in text:gmatch('[^\r\n]+') do
+				local rackNum = n:match('Стойка №(%d+)')
+				if rackNum then
+					rack = tonumber(rackNum)
+				end
 				if n:find("^Полка") then
 					totalCards = totalCards + 1
+
+					-- Row format: Полка №1 | {BEF781}Работает	0.338811 BTC | 0.155288 ASC	1 уровень	99.91%
+					-- The coins in the row give the card type: both = asic, otherwise a single-coin card.
+					local hasBtc = n:find('[%d%.]+%s+BTC') ~= nil
+					local hasAsc = n:find('[%d%.]+%s+ASC') ~= nil
+					table.insert(cardList, {
+						rack = rack,
+						shelf = tonumber(n:match('^Полка №(%d+)') or ''),
+						type = (hasBtc and hasAsc) and 'asic' or (hasBtc and 'btc_card') or (hasAsc and 'asc_card') or nil,
+						level = tonumber(n:match('(%d+) уровень') or ''),
+						coolant = tonumber(n:match('([%d%.]+)%%') or ''),
+						working = n:find('Работает') ~= nil
+					})
 
 					-- The same criterion the collection loop uses to pick a card.
 					local firstInt = tonumber(n:match('(%d+)%.%d+'))
@@ -2281,6 +2307,7 @@ function sampev.onShowDialog(id, style, rawTitle, button1, button2, rawText)
 			house.cards.paused = pausedCards
 			house.cards.urgent = urgentService
 			house.cards.soon = soonService
+			house.cardList = cardList
 			house.collected = {btc = 0, asc = 0}  -- Nothing collected yet.
 			currentHouseCollected = house.collected
 			house.needsEnabling = pausedWithCoolant > 0
