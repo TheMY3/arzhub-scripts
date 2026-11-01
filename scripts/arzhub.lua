@@ -1,6 +1,6 @@
 script_name('ArzHub')
 script_author('TheMY3')
-script_version('0.1.6')
+script_version('0.1.7')
 
 -- In-game manager for the ArzHub scripts: what is installed, what is out, install, update and remove in one click.
 -- Everything asynchronous is a step of main(): no lua_thread anywhere, hooks and download callbacks only queue or flag.
@@ -223,18 +223,28 @@ local function strings(t)
     return out
 end
 
--- path: the installed file (by filename, else the first legacy name found); legacy: an old copy lying next to it.
+-- Other names the same script may lie under: alt_filenames from the manifest (old names, other spellings)
+-- and the name a GitHub release gives it, taken from path.
+local function altNames(entry)
+    local out = strings(entry.alt_filenames)
+    local release = type(entry.path) == 'string' and entry.path:match('([^/]+)$')
+    if release then out[#out + 1] = release end
+    return out
+end
+
+-- path: the installed file (by filename, else the first alternative name found); alt: a second copy lying next to it.
 local function scanEntry(entry)
     local res = {}
     local main = type(entry.filename) == 'string' and (ML_DIR .. '\\' .. entry.filename) or nil
     if main and doesFileExist(main) then res.path = main end
-    for _, name in ipairs(strings(entry.legacy_filenames)) do
+    for _, name in ipairs(altNames(entry)) do
         local p = ML_DIR .. '\\' .. name
-        if doesFileExist(p) then
+        -- Windows names ignore case: arzhub.lua from a release is ArzHub.lua itself.
+        if doesFileExist(p) and not (main and p:lower() == main:lower()) then
             if not res.path then
                 res.path = p
-            elseif res.path == main and not res.legacy then
-                res.legacy = p
+            elseif res.path == main and not res.alt then
+                res.alt = p
             end
         end
     end
@@ -775,7 +785,7 @@ local function entryState(e)
         page = type(e.page) == 'string' and e.page or nil,
         commands = cleanCommands(e.commands), changelog = cleanChangelog(e.changelog),
         status = status, localVersion = scan.localVersion,
-        twoCopies = scan.legacy and { old = basename(scan.legacy), new = basename(scan.path) } or nil,
+        twoCopies = scan.alt and { old = basename(scan.alt), new = basename(scan.path) } or nil,
         busy = busy[e.id], result = results[e.id],
     }
 end
@@ -1050,7 +1060,7 @@ local function installEntry(e, done)
             finish(false, FAIL_TEXT.replace .. keep)
             return
         end
-        -- Found under an old name: that copy stops and is put aside, the new name always loads.
+        -- Found under another name: that copy stops and is put aside, the main name always loads.
         if scan.path then
             local running = findLoaded(scan.path)
             if running then running:unload() end
@@ -1064,7 +1074,7 @@ end
 
 local function deleteEntry(e)
     local scan = scanEntry(e)
-    for _, p in ipairs({ scan.path, scan.legacy }) do
+    for _, p in ipairs({ scan.path, scan.alt }) do
         local running = findLoaded(p)
         if running then running:unload() end
         os.remove(p)
@@ -1075,10 +1085,10 @@ end
 
 local function keepNew(e)
     local scan = scanEntry(e)
-    if not scan.legacy then return end
-    local running = findLoaded(scan.legacy)
+    if not scan.alt then return end
+    local running = findLoaded(scan.alt)
     if running then running:unload() end
-    os.remove(scan.legacy)
+    os.remove(scan.alt)
     results[e.id] = { ok = true, text = OK_KEEPNEW }
     pushState()
 end
@@ -1310,7 +1320,8 @@ end
 -- HOOKS (queue only)
 -- ============================================================================
 
--- Esc toggles Arizona's own main menu even over our window, so while ours is on top the key never reaches the game.
+-- Esc toggles Arizona's own main menu even over our window, so while ours is open the key never reaches the game.
+-- Ours closes first even over an Arizona window: it sits on top, the next Esc is that window's.
 -- Both messages are hidden and the window closes on release, or the game is left thinking Esc is held.
 function onWindowMessage(msg, wparam)
     if wparam ~= VK_ESCAPE or (msg ~= WM_KEYDOWN and msg ~= WM_KEYUP) then return end
@@ -1321,7 +1332,7 @@ function onWindowMessage(msg, wparam)
         queue[#queue + 1] = { kind = 'close', data = 'esc' }
         return
     end
-    if not isOpen or activeView then
+    if not isOpen then
         -- A release lost to Alt+Tab must not keep the next Esc from the game.
         escHidden = false
         return
@@ -1333,7 +1344,7 @@ function onWindowMessage(msg, wparam)
     consumeWindowMessage(true, false)
 end
 
--- Tracks which Arizona window is open: its Esc stays its own, and our cursor is switched again over it.
+-- Tracks which Arizona window is open: our cursor is switched again over it and left to it when ours closes.
 local function readIncoming(bs)
     raknetBitStreamIgnoreBits(bs, 8)
     if raknetBitStreamReadInt8(bs) ~= 17 then return end

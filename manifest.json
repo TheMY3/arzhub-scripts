@@ -402,7 +402,7 @@
       "id": "arzhub",
       "name": "ArzHub",
       "filename": "ArzHub.lua",
-      "version": "0.1.6",
+      "version": "0.1.7",
       "path": "scripts/arzhub.lua",
       "topic": "",
       "actual": true,
@@ -449,6 +449,12 @@
           "version": "0.1.6",
           "notes": [
             "Окно снова стоит по центру."
+          ]
+        },
+        {
+          "version": "0.1.7",
+          "notes": [
+            "Esc сначала закрывает менеджер, а потом уже окно игры (телефон, инвентарь)."
           ]
         }
       ],
