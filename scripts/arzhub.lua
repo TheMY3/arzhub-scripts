@@ -1,6 +1,6 @@
 script_name('ArzHub')
 script_author('TheMY3')
-script_version('0.1.8')
+script_version('0.1.9')
 
 -- In-game manager for the ArzHub scripts: what is installed, what is out, install, update and remove in one click.
 -- Everything asynchronous is a step of main(): no lua_thread anywhere, hooks and download callbacks only queue or flag.
@@ -16,13 +16,14 @@ pcall(ffi.cdef, [[
     int IsIconic(void* hWnd);
 ]])
 
-local TAG = '{FFA500}[ArzHub]{FFFFFF}: '
+-- The site's orange: the tag in its light end, highlights (versions, commands) in the peach of the window's command chips.
+local TAG = '{FFA31A}[ArzHub]{FFFFFF}: '
 local UPDATE_SCRIPT_ID = 'arzhub'
 local BASE_URL = 'https://raw.githubusercontent.com/TheMY3/arzhub-scripts/main/'
 local MANIFEST_URL = BASE_URL .. 'manifest.json'
 local RELEASES_URL = 'https://github.com/TheMY3/arzhub-scripts/releases'
 
-local SOCKET_LIB_URL = 'https://github.com/TheMY3/arzhub-scripts/tree/main/lib'
+local SOCKET_LIB_URL = 'https://github.com/TheMY3/arzhub-scripts/raw/main/lib/luasocket.zip'
 local PORT_FIRST, PORT_LAST = 38260, 38270 -- Local HTTP channel from the page, first free port wins.
 local CLIENT_TIMEOUT = 2 -- Seconds a page connection may take to send its request line.
 
@@ -37,11 +38,13 @@ local CACHE_PATH = DATA_DIR .. '\\cache.json'
 local LOG_PATH = DATA_DIR .. '\\arzhub.log'
 local SELF_UPDATED_PATH = DATA_DIR .. '\\updated.txt'  -- Version the manager just updated itself to.
 
-local LOGIN_SCRIPTS = 'Можно обновить %s. Открыть: /hub'
-local LOGIN_MANAGER = 'Вышла новая версия менеджера. Открыть: /hub'
-local LOGIN_BOTH = 'Вышла новая версия менеджера, и можно обновить %s. Открыть: /hub'
+local LOAD_FIRST = 'Загружен {FFB48A}v%s{FFFFFF}'
+local LOAD_UPDATED = 'Обновлён до {FFB48A}v%s{FFFFFF}'
+local LOAD_SCRIPTS = '. %s: {FFB48A}/hub'
+local LOAD_MANAGER = ', вышла {FFB48A}v%s{FFFFFF}. Обновить: {FFB48A}/hub'
+local LOAD_OPEN = '. Открыть: {FFB48A}/hub'
 local SELF_UPDATED_TEXT = 'Менеджер обновлён до %s.'
-local SOCKET_FAIL_TEXT = 'Окну не хватает библиотеки LuaSocket, и скачать её не вышло. Положите вручную в moonloader\\lib: ' .. SOCKET_LIB_URL
+local SOCKET_FAIL_TEXT = 'Не удалось скачать библиотеку LuaSocket для окна. Скачайте архив и распакуйте его в папку moonloader: {FFB48A}' .. SOCKET_LIB_URL
 local BOOT_FAIL_TEXT = 'Окно не открылось: игра не ответила. Попробуйте ещё раз.'
 local PORTS_BUSY_TEXT = 'Окну нужен свободный порт ' .. PORT_FIRST .. '-' .. PORT_LAST .. ', а все заняты другими программами.'
 
@@ -304,30 +307,36 @@ local function cleanupTmp()
     end
 end
 
--- 1 скрипт, 2 скрипта, 5 скриптов.
-local function scriptsCount(n)
-    local m10, m100 = n % 10, n % 100
-    if m10 == 1 and m100 ~= 11 then return n .. ' скрипт' end
-    if m10 >= 2 and m10 <= 4 and (m100 < 12 or m100 > 14) then return n .. ' скрипта' end
-    return n .. ' скриптов'
+-- «Доступно обновление для 1 скрипта», «Доступны обновления для 3 скриптов», «… для 21 скрипта».
+local function updatesFor(n)
+    if n == 1 then return 'Доступно обновление для 1 скрипта' end
+    local one = n % 10 == 1 and n % 100 ~= 11
+    return 'Доступны обновления для ' .. n .. (one and ' скрипта' or ' скриптов')
 end
 
--- A count, not names: the window has the list.
+local justUpdated = false   -- This copy was just put in place by a self-update.
+
+-- One line per load, like the other scripts' «Загружен vX». A count, not names: the window has the list.
+-- Updatable scripts win over a new manager: the window shows its banner anyway.
 local function loginLine()
-    local m = catalog.manager
-    local remote = m and versionNum(m.version)
-    local manager = remote and remote > (versionNum(thisScript().version) or 0)
+    local own = thisScript().version
+    local line = (justUpdated and LOAD_UPDATED or LOAD_FIRST):format(own)
     local n = 0
-    for _, e in ipairs(catalog.list) do
-        if hasUpdate(e, scanEntry(e)) then n = n + 1 end
+    if catalog then
+        for _, e in ipairs(catalog.list) do
+            if hasUpdate(e, scanEntry(e)) then n = n + 1 end
+        end
     end
-    if manager and n > 0 then
-        chat(LOGIN_BOTH:format(scriptsCount(n)))
-    elseif manager then
-        chat(LOGIN_MANAGER)
-    elseif n > 0 then
-        chat(LOGIN_SCRIPTS:format(scriptsCount(n)))
+    local m = catalog and catalog.manager
+    local remote = m and versionNum(m.version)
+    if n > 0 then
+        line = line .. LOAD_SCRIPTS:format(updatesFor(n))
+    elseif remote and remote > (versionNum(own) or 0) then
+        line = line .. LOAD_MANAGER:format(m.version)
+    else
+        line = line .. LOAD_OPEN
     end
+    chat(line)
 end
 
 -- ============================================================================
@@ -1215,7 +1224,7 @@ onCatalog = function(err, login)
         cleanupTmp()
         withPage(function() end)
     end
-    if login and not err then loginLine() end
+    if login then loginLine() end
     ensureSocket()
     -- The fallback page has nothing to show once the list is back: the real one replaces it.
     if not err and isOpen and openPageKey == 'fallback' and catalog.ui then
@@ -1398,12 +1407,11 @@ function main()
     token = newToken()
     -- An installed LuaSocket needs no list: /hub must not wait for GitHub.
     if tryRequire() then socketState = socketReady() end
-    -- Right after a self-update the new copy says so instead of the login line: the player was just in the window.
+    -- Right after a self-update the load line says «Обновлён до» instead of «Загружен».
     local updatedTo = readFile(SELF_UPDATED_PATH)
     removeIfExists(SELF_UPDATED_PATH)
-    local justUpdated = updatedTo == thisScript().version
-    if justUpdated then chat(SELF_UPDATED_TEXT:format(updatedTo)) end
-    refreshCatalog(not justUpdated)
+    justUpdated = updatedTo == thisScript().version
+    refreshCatalog(true)
 
     while true do
         wait(0)
