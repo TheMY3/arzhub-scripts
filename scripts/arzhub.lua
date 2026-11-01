@@ -1,6 +1,6 @@
 script_name('ArzHub')
 script_author('TheMY3')
-script_version('0.2.0')
+script_version('0.2.1')
 
 -- In-game manager for the ArzHub scripts: what is installed, what is out, install, update and remove in one click.
 -- Everything asynchronous is a step of main(): no lua_thread anywhere, hooks and download callbacks only queue or flag.
@@ -972,6 +972,8 @@ local function closeWindow(reason)
     if not isOpen then return end
     isOpen = false
     call('close()')
+    -- «Установлено» and the like are for this window: the next one starts clean. One that lands while closed shows once.
+    results = {}
     -- Under an Arizona window the cursor is that window's.
     if cursorOn then cefCursor(false, 'закрытие окна') end
     reapplyPending = false
