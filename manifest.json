@@ -4,8 +4,7 @@
       "id": "inventory-plus",
       "name": "Inventory Plus",
       "filename": "[TheMY3] Inventory Plus.lua",
-      "legacy_filenames": [],
-      "version": "2.6.2",
+      "version": "2.7.0",
       "path": "scripts/inventory-plus.lua",
       "topic": "https://www.blast.hk/threads/255785/",
       "actual": true,
@@ -68,22 +67,28 @@
             "Надёжнее перезапуск после обновления: больше не перезапускается дважды вместе с ML-AutoReboot.",
             "Приветствие при входе подсказывает, где что работает."
           ]
+        },
+        {
+          "version": "2.7.0",
+          "notes": [
+            "Убрано своё закрепление предметов в инвентаре - в игре появилось родное. Метки и порядок от старого закрепления пропадут сами."
+          ]
         }
       ],
-      "description": "Добавляет вывод названий и поиск предметов в лавке, шкафах и т. п. Также можно забрать все предметы в один клик, отсортировать их по названию, есть кнопка MAX и подсказка стоимости предмета в лавке. А ещё закрепление предметов в инвентаре.",
-      "usage": "Работает автоматически: строка поиска и названия появляются в окнах лавки, шкафов и складов. Закрепление - через ПКМ по предмету в инвентаре.",
+      "description": "Добавляет вывод названий и поиск предметов в лавке, шкафах и т. п. Также можно забрать все предметы в один клик, отсортировать их по названию, есть кнопка MAX и подсказка стоимости предмета в лавке.",
+      "usage": "Работает автоматически: строка поиска и названия появляются в окнах лавки, шкафов и складов.",
       "commands": [
         {
           "cmd": "/ipreload",
           "desc": "обновить список названий предметов"
         }
-      ]
+      ],
+      "alt_filenames": []
     },
     {
       "id": "crypto-collector",
       "name": "Crypto Collector",
       "filename": "[TheMY3] Crypto Collector.lua",
-      "legacy_filenames": [],
       "version": "2.5.2",
       "path": "scripts/crypto-collector.lua",
       "topic": "https://www.blast.hk/threads/243868/",
@@ -121,13 +126,13 @@
           "cmd": "/crstats",
           "desc": "история, настройки и справка"
         }
-      ]
+      ],
+      "alt_filenames": []
     },
     {
       "id": "auto-spawn",
       "name": "Auto Spawn",
       "filename": "[TheMY3] Auto Spawn.lua",
-      "legacy_filenames": [],
       "version": "1.0.2",
       "path": "scripts/auto-spawn.lua",
       "topic": "https://www.blast.hk/threads/258154/",
@@ -160,13 +165,13 @@
         }
       ],
       "description": "Автоспавн в выбранное место: отметьте место звёздочкой в окне выбора спавна, и после отсчёта игра начнётся сама.",
-      "usage": "Работает только с новой авторизацией, она включается в настройках лаунчера. Отсчёт отменяется выбором другого места, а автоспавн выключается, если снять звёздочку."
+      "usage": "Работает только с новой авторизацией, она включается в настройках лаунчера. Отсчёт отменяется выбором другого места, а автоспавн выключается, если снять звёздочку.",
+      "alt_filenames": []
     },
     {
       "id": "craft-counter",
       "name": "Craft Counter",
       "filename": "[TheMY3] CraftCounter.lua",
-      "legacy_filenames": [],
       "version": "1.3.2",
       "path": "scripts/craft-counter.lua",
       "topic": "https://www.blast.hk/threads/246012/",
@@ -219,13 +224,13 @@
           "cmd": "/cchistory",
           "desc": "окно истории крафтов"
         }
-      ]
+      ],
+      "alt_filenames": []
     },
     {
       "id": "battlepass-helper",
       "name": "BattlePass Helper",
       "filename": "[TheMY3] BattlePass Helper.lua",
-      "legacy_filenames": [],
       "version": "1.2.2",
       "path": "scripts/battlepass-helper.lua",
       "topic": "https://www.blast.hk/threads/257000/",
@@ -263,13 +268,13 @@
           "cmd": "/bpload",
           "desc": "обновить список заданий в начале нового сезона"
         }
-      ]
+      ],
+      "alt_filenames": []
     },
     {
       "id": "case-opener",
       "name": "Case Opener",
       "filename": "[TheMY3] Case Opener.lua",
-      "legacy_filenames": [],
       "version": "2.1.1",
       "path": "scripts/case-opener.lua",
       "topic": "https://www.blast.hk/threads/257210/",
@@ -361,13 +366,13 @@
           "cmd": "/caselogs",
           "desc": "лог дропа и правила"
         }
-      ]
+      ],
+      "alt_filenames": []
     },
     {
       "id": "dialog-plus",
       "name": "Dialog Plus",
       "filename": "[TheMY3] Dialog Plus.lua",
-      "legacy_filenames": [],
       "version": "1.2.0",
       "path": "scripts/dialog-plus.lua",
       "topic": "https://www.blast.hk/threads/256216/",
@@ -384,13 +389,13 @@
         }
       ],
       "description": "Добавляет возможность выбирать пункты диалога цифрами. Приводит нумерацию пунктов к единому стилю. Добавляет кнопку MAX в некоторых диалогах ввода количества.",
-      "usage": "Работает автоматически в диалогах: цифра подсвечивает пункт, повторное нажатие выбирает его, 0 выбирает десятый пункт."
+      "usage": "Работает автоматически в диалогах: цифра подсвечивает пункт, повторное нажатие выбирает его, 0 выбирает десятый пункт.",
+      "alt_filenames": []
     },
     {
       "id": "arzhub",
       "name": "ArzHub",
       "filename": "ArzHub.lua",
-      "legacy_filenames": [],
       "version": "0.1.6",
       "path": "scripts/arzhub.lua",
       "topic": "",
@@ -440,7 +445,8 @@
             "Окно снова стоит по центру."
           ]
         }
-      ]
+      ],
+      "alt_filenames": []
     }
   ],
   "ui": {
