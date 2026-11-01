@@ -1,6 +1,6 @@
 script_name('BattlePass Helper')
 script_author('TheMY3')
-script_version('1.2.2')
+script_version('1.2.3')
 
 -- Тема на форуме (актуальная версия, обсуждение): https://www.blast.hk/threads/257000/
 
@@ -35,6 +35,9 @@ local CATALOG_PATH = CFG_DIR .. '\\catalog.json'
 local REFRESH_COOLDOWN = 1
 local REFRESH_TIMEOUT = 8 -- how long we wait for the data burst.
 local SNAPSHOT_FRESH = 60 -- a snapshot younger than this needs no refresh on /bp.
+-- While an event pass runs, /battlepass opens a pass chooser first; this is the card sent for the main pass.
+-- The chooser's CSS classes are swapped: card 0 carries item--event yet is BATTLE PASS. Card 1 is the event pass.
+local CHOOSER_BP_CARD = 0
 
 -- Trebuchet MS Bold, the very face mimgui bakes as its default: the smallest preset is indistinguishable from having no setting at all. Bold for the descriptions too - over grass and sand a regular weight loses even with a shadow, and the hierarchy rests on size and colour anyway.
 local FONT_FILE = 'trebucbd.ttf'
@@ -966,7 +969,22 @@ function onReceivePacket(id, bs)
             or raknetBitStreamReadString(bs, length)
         if not str then return end
 
-        if str:find('event.battlePass.initializeBattlePassData', 1, true) then
+        if str:find('event.setActiveView', 1, true) and str:find('BattlePassChose', 1, true) then
+            -- Pick the main pass only for our own refresh: a chooser the player opened is theirs.
+            if weOpened and os.clock() < refreshDeadline then
+                sendCef('battlePassChose.select|' .. CHOOSER_BP_CARD)
+            end
+
+        elseif str:find('event.setActiveView', 1, true) and str:find('"EventPass"', 1, true) then
+            -- Our pick landed on the event pass: the chooser changed, close it and leave the fix to a release.
+            if weOpened and os.clock() < refreshDeadline then
+                weOpened = false
+                sendCef('eventPass.exit')
+                chat('Окно выбора пропуска изменилось: поставь {5CC9FF}CHOOSER_BP_CARD = '
+                    .. (1 - CHOOSER_BP_CARD) .. '{FFFFFF} в начале скрипта')
+            end
+
+        elseif str:find('event.battlePass.initializeBattlePassData', 1, true) then
             local payload = str:match('`(.+)`')
             local ok, data = pcall(decodeJson, payload or '')
             if ok and type(data) == 'table' and data[1] then

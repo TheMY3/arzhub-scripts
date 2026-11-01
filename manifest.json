@@ -231,7 +231,7 @@
       "id": "battlepass-helper",
       "name": "BattlePass Helper",
       "filename": "[TheMY3] BattlePass Helper.lua",
-      "version": "1.2.2",
+      "version": "1.2.3",
       "path": "scripts/battlepass-helper.lua",
       "topic": "https://www.blast.hk/threads/257000/",
       "actual": true,
@@ -254,6 +254,12 @@
           "notes": [
             "Понятнее сообщения при неудачном обновлении: что случилось и когда повторить.",
             "Надёжнее перезапуск после обновления: больше не перезапускается дважды вместе с ML-AutoReboot."
+          ]
+        },
+        {
+          "version": "1.2.3",
+          "notes": [
+            "Клавиша обновления снова подтягивает задания, пока идёт ивент-пропуск: скрипт сам выбирает Battle Pass в окне выбора пропуска."
           ]
         }
       ],
