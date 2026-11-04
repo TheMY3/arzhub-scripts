@@ -1,6 +1,7 @@
 script_name('ArzHub')
-script_author('TheMY3')
-script_version('0.2.1')
+script_author('ArzHub')
+script_version('0.2.2')
+script_url('https://arzhub.top/hub')
 
 -- In-game manager for the ArzHub scripts: what is installed, what is out, install, update and remove in one click.
 -- Everything asynchronous is a step of main(): no lua_thread anywhere, hooks and download callbacks only queue or flag.
@@ -1066,6 +1067,7 @@ local FAIL_TEXT = {
     busy = 'Загрузка не началась, повторите через пару минут.',
 }
 local FAIL_KEEP = ' Старая версия на месте.'
+local LOAD_FAIL_TEXT = 'Скрипт скачан, но не запустился. Перезапустите скрипты (Ctrl+R) или напишите: https://arzhub.top/support'
 local SITE_PATTERN = '^https://arzhub%.top/[%w%-%._~/]*$'
 
 local reloadPending = false
@@ -1167,7 +1169,10 @@ local function installEntry(e, done)
             end
             local running = findLoaded(target)
             if running then running:unload() end
-            loadScript(target)
+            if not loadScript(target) then
+                finish(false, LOAD_FAIL_TEXT, 'load')
+                return
+            end
             finish(true, OK_UPDATE:format(e.version))
             return
         end
@@ -1183,7 +1188,11 @@ local function installEntry(e, done)
             removeIfExists(scan.path .. '.old')
             os.rename(scan.path, scan.path .. '.old')
         end
-        loadScript(target)
+        -- The new file stays in place: a script reload picks it up once whatever stopped it is fixed.
+        if not loadScript(target) then
+            finish(false, LOAD_FAIL_TEXT, 'load')
+            return
+        end
         finish(true, scan.path and OK_UPDATE:format(e.version) or OK_INSTALL)
     end)
 end
