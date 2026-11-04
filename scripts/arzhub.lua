@@ -1,6 +1,6 @@
 script_name('ArzHub')
 script_author('ArzHub')
-script_version('0.2.2')
+script_version('1.0.0')
 script_url('https://arzhub.top/hub')
 
 -- In-game manager for the ArzHub scripts: what is installed, what is out, install, update and remove in one click.
@@ -21,12 +21,15 @@ pcall(ffi.cdef, [[
 local TAG = '{FFA31A}[ArzHub]{FFFFFF}: '
 local UPDATE_SCRIPT_ID = 'arzhub'
 -- Everything comes from the site: it proxies the arzhub-scripts repository and sees every start and download.
-local BASE_URL = 'https://arzhub.top/hub/'
-local MANIFEST_URL = BASE_URL .. 'manifest.json'
-local RELEASES_URL = 'https://arzhub.top/hub'
-local EVENT_URL = 'https://arzhub.top/api/hub/event'
+local URL = {
+    base = 'https://arzhub.top/hub/',
+    manifest = 'https://arzhub.top/hub/manifest.json',
+    releases = 'https://arzhub.top/hub',
+    support = 'https://arzhub.top/support',
+    event = 'https://arzhub.top/api/hub/event',
+    socketLib = 'https://arzhub.top/hub/lib/luasocket.zip',
+}
 
-local SOCKET_LIB_URL = BASE_URL .. 'lib/luasocket.zip'
 local PORT_FIRST, PORT_LAST = 38260, 38270 -- Local HTTP channel from the page, first free port wins.
 local CLIENT_TIMEOUT = 2 -- Seconds a page connection may take to send its request line.
 
@@ -46,21 +49,30 @@ local ID_PATH = DATA_DIR .. '\\id.txt'  -- Anonymous install id: kept apart from
 local LOG_PATH = DATA_DIR .. '\\arzhub.log'
 local SELF_UPDATED_PATH = DATA_DIR .. '\\updated.txt'  -- Version the manager just updated itself to.
 
-local LOAD_FIRST = 'Загружен {FFB48A}v%s{FFFFFF}'
-local LOAD_UPDATED = 'Обновлён до {FFB48A}v%s{FFFFFF}'
-local LOAD_SCRIPTS = '. %s: {FFB48A}/hub'
-local LOAD_MANAGER = ', вышла {FFB48A}v%s{FFFFFF}. Обновить: {FFB48A}/hub'
-local LOAD_OPEN = '. Открыть: {FFB48A}/hub'
-local SELF_UPDATED_TEXT = 'Менеджер обновлён до %s.'
-local SOCKET_FAIL_TEXT = 'Не удалось скачать библиотеку LuaSocket для окна. Скачайте архив и распакуйте его в папку moonloader: {FFB48A}' .. SOCKET_LIB_URL
--- Support hears about a breakage; /hub update then delivers the fix to a player whose window cannot open.
-local BOOT_FAIL_TEXT = 'Окно не открылось. Попробуйте ещё раз или обновите менеджер: {FFB48A}/hub update{FFFFFF}. Не помогает - напишите: {FFB48A}https://arzhub.top/support'
-local UPDATE_START_TEXT = 'Скачиваю {FFB48A}v%s{FFFFFF}...'
-local UPDATE_NONE_TEXT = 'У менеджера последняя версия {FFB48A}v%s{FFFFFF}.'
-local UPDATE_OFFLINE_TEXT = 'Не удалось проверить обновления, повторите через пару минут.'
-local UPDATE_BUSY_TEXT = 'Менеджер уже обновляется.'
-local HELP_TEXT = 'Команды: {FFB48A}/hub{FFFFFF} - окно, {FFB48A}/hub update{FFFFFF} - обновить менеджер.'
-local PORTS_BUSY_TEXT = 'Окну нужен свободный порт ' .. PORT_FIRST .. '-' .. PORT_LAST .. ', а все заняты другими программами.'
+-- What the player reads, in chat and in the window.
+local TEXT = {
+    loadFirst = 'Загружен {FFB48A}v%s{FFFFFF}',
+    loadUpdated = 'Обновлён до {FFB48A}v%s{FFFFFF}',
+    loadScripts = '. %s: {FFB48A}/hub',
+    loadManager = ', вышла {FFB48A}v%s{FFFFFF}. Обновить: {FFB48A}/hub',
+    loadOpen = '. Открыть: {FFB48A}/hub',
+    selfUpdated = 'Менеджер обновлён до %s.',
+    socketFail = 'Не удалось скачать библиотеку LuaSocket для окна. Скачайте архив и распакуйте его в папку moonloader: {FFB48A}' .. URL.socketLib,
+    -- Support hears about a breakage; /hub update then delivers the fix to a player whose window cannot open.
+    bootFail = 'Окно не открылось. Попробуйте ещё раз или обновите менеджер: {FFB48A}/hub update{FFFFFF}. Не помогает - напишите: {FFB48A}' .. URL.support,
+    updateStart = 'Скачиваю {FFB48A}v%s{FFFFFF}...',
+    updateNone = 'У менеджера последняя версия {FFB48A}v%s{FFFFFF}.',
+    updateOffline = 'Не удалось проверить обновления, повторите через пару минут.',
+    updateBusy = 'Менеджер уже обновляется.',
+    help = 'Команды: {FFB48A}/hub{FFFFFF} - окно, {FFB48A}/hub update{FFFFFF} - обновить менеджер.',
+    portsBusy = 'Окну нужен свободный порт ' .. PORT_FIRST .. '-' .. PORT_LAST .. ', а все заняты другими программами.',
+    -- Result lines in the window.
+    okInstall = 'Установлено, скрипт запущен.',
+    okUpdate = 'Обновлено до %s, скрипт перезапущен.',
+    okKeepNew = 'Старая копия удалена.',
+    failKeep = ' Старая версия на месте.',
+    loadFail = 'Скрипт скачан, но не запустился. Перезапустите скрипты (Ctrl+R) или напишите: ' .. URL.support,
+}
 
 -- ============================================================================
 -- HELPERS
@@ -257,7 +269,7 @@ local function queueEvent(name, fields)
     for _, k in ipairs(keys) do q[#q + 1] = k .. '=' .. urlEncode(fields[k]) end
     local dest = DL_DIR .. '\\event.tmp'
     evQueue[#evQueue + 1] = {
-        url = EVENT_URL .. '?' .. table.concat(q, '&'), dest = dest, event = true, timeout = EVENT_TIMEOUT,
+        url = URL.event .. '?' .. table.concat(q, '&'), dest = dest, event = true, timeout = EVENT_TIMEOUT,
         onDone = function() removeIfExists(dest) end,
     }
 end
@@ -337,7 +349,7 @@ end
 -- query: extra fields for the site; the one at load marks a start (see bootQuery).
 local function fetchManifest(onDone, query)
     local tmp = DL_DIR .. '\\manifest.json.tmp'
-    queueDownload(MANIFEST_URL .. (query and ('?' .. query) or ''), tmp, function(err)
+    queueDownload(URL.manifest .. (query and ('?' .. query) or ''), tmp, function(err)
         if err then onDone(err) return end
         local body = readFile(tmp)
         removeIfExists(tmp)
@@ -410,7 +422,7 @@ local justUpdated = false   -- This copy was just put in place by a self-update.
 -- Updatable scripts win over a new manager: the window shows its banner anyway.
 local function loginLine()
     local own = thisScript().version
-    local line = (justUpdated and LOAD_UPDATED or LOAD_FIRST):format(own)
+    local line = (justUpdated and TEXT.loadUpdated or TEXT.loadFirst):format(own)
     local n = 0
     if catalog then
         for _, e in ipairs(catalog.list) do
@@ -420,11 +432,11 @@ local function loginLine()
     local m = catalog and catalog.manager
     local remote = m and versionNum(m.version)
     if n > 0 then
-        line = line .. LOAD_SCRIPTS:format(updatesFor(n))
+        line = line .. TEXT.loadScripts:format(updatesFor(n))
     elseif remote and remote > (versionNum(own) or 0) then
-        line = line .. LOAD_MANAGER:format(m.version)
+        line = line .. TEXT.loadManager:format(m.version)
     else
-        line = line .. LOAD_OPEN
+        line = line .. TEXT.loadOpen
     end
     chat(line)
 end
@@ -510,7 +522,7 @@ local function ensureSocket()
             return
         end
         local tmp = DL_DIR .. '\\socket-' .. i .. '.tmp'
-        queueDownload(BASE_URL .. d.path, tmp, function(err)
+        queueDownload(URL.base .. d.path, tmp, function(err)
             if err then fail(d.path .. ': ' .. err) return end
             local body = readFile(tmp)
             if not body or sha256(body) ~= d.sha256:lower() then
@@ -890,7 +902,7 @@ local function entryState(e)
 end
 
 local function buildState()
-    local st = { scripts = {}, releases = RELEASES_URL }
+    local st = { scripts = {}, releases = URL.releases }
     local own = thisScript().version
     st.manager = { version = own, busy = busy[UPDATE_SCRIPT_ID], result = results[UPDATE_SCRIPT_ID] }
     if not catalog then
@@ -923,7 +935,7 @@ local function withPage(cb)
     if pageFetching then return end
     pageFetching = true
     local tmp = PAGE_DIR .. '\\hub.html.tmp'
-    queueDownload(BASE_URL .. ui.path, tmp, function(err)
+    queueDownload(URL.base .. ui.path, tmp, function(err)
         pageFetching = false
         local body = not err and readFile(tmp) or nil
         removeIfExists(tmp)
@@ -1005,7 +1017,7 @@ local function stepOpen()
         if not bootAck then
             if os.clock() > o.deadline then
                 opening = nil
-                chat(BOOT_FAIL_TEXT)
+                chat(TEXT.bootFail)
                 queueEvent('window_fail', { stage = 'boot' })
             end
             return
@@ -1045,7 +1057,7 @@ local function stepOpen()
             if not catalog or catalog.offline or os.time() - catalog.fetchedAt > REFETCH_AFTER then refreshCatalog(false) end
         elseif os.clock() > o.deadline then
             cancelOpening()
-            chat(BOOT_FAIL_TEXT)
+            chat(TEXT.bootFail)
             queueEvent('window_fail', { stage = 'load' })
         end
     end
@@ -1055,9 +1067,6 @@ end
 -- INSTALLER
 -- ============================================================================
 
-local OK_INSTALL = 'Установлено, скрипт запущен.'
-local OK_UPDATE = 'Обновлено до %s, скрипт перезапущен.'
-local OK_KEEPNEW = 'Старая копия удалена.'
 local FAIL_TEXT = {
     timeout = 'Сервер не ответил, повторите через пару минут.',
     empty = 'Файл не скачался, повторите через пару минут.',
@@ -1066,8 +1075,6 @@ local FAIL_TEXT = {
     replace = 'Не удалось записать файл: он занят другой программой или нет прав.',
     busy = 'Загрузка не началась, повторите через пару минут.',
 }
-local FAIL_KEEP = ' Старая версия на месте.'
-local LOAD_FAIL_TEXT = 'Скрипт скачан, но не запустился. Перезапустите скрипты (Ctrl+R) или напишите: https://arzhub.top/support'
 local SITE_PATTERN = '^https://arzhub%.top/[%w%-%._~/]*$'
 
 local reloadPending = false
@@ -1130,7 +1137,7 @@ local function installEntry(e, done)
     local id = e.id
     local scan = scanEntry(e)
     local target = ML_DIR .. '\\' .. e.filename
-    local keep = scan.path and FAIL_KEEP or ''
+    local keep = scan.path and TEXT.failKeep or ''
     local function finish(ok, text, err)
         busy[id] = nil
         results[id] = { ok = ok, text = text }
@@ -1144,7 +1151,7 @@ local function installEntry(e, done)
     busy[id], results[id] = true, nil
     pushState()
     local tmp = target .. '.tmp'
-    queueDownload(BASE_URL .. e.path, tmp, function(err)
+    queueDownload(URL.base .. e.path, tmp, function(err)
         if err then
             removeIfExists(tmp)
             finish(false, FAIL_TEXT[err] .. keep, err)
@@ -1164,16 +1171,16 @@ local function installEntry(e, done)
             end
             -- ML-AutoReboot restarts a replaced file it watches; a second load of our own would race it.
             if autoReboot() and not loadedHere[target:lower()] then
-                finish(true, OK_UPDATE:format(e.version))
+                finish(true, TEXT.okUpdate:format(e.version))
                 return
             end
             local running = findLoaded(target)
             if running then running:unload() end
             if not loadScript(target) then
-                finish(false, LOAD_FAIL_TEXT, 'load')
+                finish(false, TEXT.loadFail, 'load')
                 return
             end
-            finish(true, OK_UPDATE:format(e.version))
+            finish(true, TEXT.okUpdate:format(e.version))
             return
         end
         if not os.rename(tmp, target) then
@@ -1190,10 +1197,10 @@ local function installEntry(e, done)
         end
         -- The new file stays in place: a script reload picks it up once whatever stopped it is fixed.
         if not loadScript(target) then
-            finish(false, LOAD_FAIL_TEXT, 'load')
+            finish(false, TEXT.loadFail, 'load')
             return
         end
-        finish(true, scan.path and OK_UPDATE:format(e.version) or OK_INSTALL)
+        finish(true, scan.path and TEXT.okUpdate:format(e.version) or TEXT.okInstall)
     end)
 end
 
@@ -1215,7 +1222,7 @@ local function keepNew(e)
     local running = findLoaded(scan.alt)
     if running then running:unload() end
     os.remove(scan.alt)
-    results[e.id] = { ok = true, text = OK_KEEPNEW }
+    results[e.id] = { ok = true, text = TEXT.okKeepNew }
     pushState()
 end
 
@@ -1255,16 +1262,16 @@ local function selfUpdate(announce)
     end
     busy[UPDATE_SCRIPT_ID], results[UPDATE_SCRIPT_ID] = true, nil
     pushState()
-    queueDownload(BASE_URL .. m.path, tmp, function(err)
+    queueDownload(URL.base .. m.path, tmp, function(err)
         if err then
             removeIfExists(tmp)
-            finish(false, FAIL_TEXT[err] .. FAIL_KEEP, err)
+            finish(false, FAIL_TEXT[err] .. TEXT.failKeep, err)
             return
         end
         local bad = checkBuild(tmp, m.version, own)
         if bad or not atomicReplace(tmp, target) then
             removeIfExists(tmp)
-            finish(false, FAIL_TEXT[bad or 'replace'] .. FAIL_KEEP, bad or 'replace')
+            finish(false, FAIL_TEXT[bad or 'replace'] .. TEXT.failKeep, bad or 'replace')
             return
         end
         selfReplaced, dlFrozen = true, true
@@ -1272,7 +1279,7 @@ local function selfUpdate(announce)
         writeFile(SELF_UPDATED_PATH, m.version)
         if autoReboot() then
             -- ML-AutoReboot may reload us before the outbox drains: a queued close would leave the window behind.
-            finish(true, SELF_UPDATED_TEXT:format(m.version))
+            finish(true, TEXT.selfUpdated:format(m.version))
             if isOpen then destroyNow('обновление менеджера') end
             closeWindow('обновление менеджера, перезапустит ML-AutoReboot')
             return
@@ -1299,14 +1306,14 @@ end
 
 local ACTIONS = {
     install = true, update = true, delete = true, keepNew = true, open = true, run = true,
-    updateAll = true, selfUpdate = true, releases = true,
+    updateAll = true, selfUpdate = true, releases = true, support = true,
 }
 
 -- Page actions need a fresh list and never overlap: a busy entry or a running update-all ignores them.
 local function onAction(kind, data)
-    -- The manual download is for exactly the cases where the rest fails, so it needs no list.
-    if kind == 'releases' then
-        os.execute('start ' .. RELEASES_URL)
+    -- The site and support links are for exactly the cases where the rest fails, so they need no list.
+    if kind == 'releases' or kind == 'support' then
+        os.execute('start ' .. (kind == 'support' and URL.support or URL.releases))
         return
     end
     if not catalog or catalog.offline or bulk or selfReplaced or busy[UPDATE_SCRIPT_ID] then return end
@@ -1353,12 +1360,12 @@ onCatalog = function(err, login)
         local m = catalog and catalog.manager
         local remote = m and versionNum(m.version)
         if err or not m then
-            chat(UPDATE_OFFLINE_TEXT)
+            chat(TEXT.updateOffline)
         elseif remote and remote > (versionNum(thisScript().version) or 0) then
-            chat(UPDATE_START_TEXT:format(m.version))
+            chat(TEXT.updateStart:format(m.version))
             selfUpdate(true)
         else
-            chat(UPDATE_NONE_TEXT:format(thisScript().version))
+            chat(TEXT.updateNone:format(thisScript().version))
         end
     end
     -- The fallback page has nothing to show once the list is back: the real one replaces it.
@@ -1405,7 +1412,7 @@ end
 -- The manager's own update without the window: the way out when Arizona breaks CEF.
 local function onUpdateCommand()
     if updateAsked or busy[UPDATE_SCRIPT_ID] or selfReplaced then
-        chat(UPDATE_BUSY_TEXT)
+        chat(TEXT.updateBusy)
         return
     end
     updateAsked = true
@@ -1415,7 +1422,7 @@ end
 local function onCommand(arg)
     arg = tostring(arg or ''):match('^%s*(.-)%s*$'):lower()
     if arg == 'update' then onUpdateCommand() return end
-    if arg ~= '' then chat(HELP_TEXT) return end
+    if arg ~= '' then chat(TEXT.help) return end
     if opening then cancelOpening() return end
     if isOpen then closeWindow('команда /hub') return end
     wantOpen = not wantOpen
@@ -1444,10 +1451,10 @@ local function stepWindow()
         elseif socketState == 'failed' or socketState == 'missing' then
             queueEvent('socket_fail', { state = socketState })
             wantOpen, socketRetried = false, false
-            chat(SOCKET_FAIL_TEXT)
+            chat(TEXT.socketFail)
         elseif socketState == 'busy' then
             wantOpen = false
-            chat(PORTS_BUSY_TEXT)
+            chat(TEXT.portsBusy)
             queueEvent('socket_fail', { state = 'busy' })
         end
     end
