@@ -1,18 +1,18 @@
 script_name('Dialog Plus')
-script_author('TheMY3')
-script_version('1.2.0')
+script_author('ArzHub')
+script_version('1.3.0')
+script_url('https://arzhub.top/hub/dialog-plus')
 
 -- Forum topic (current version, discussion): https://www.blast.hk/threads/256216/
 
-local moonloader = require('moonloader') -- download_status for self-update.
+local moonloader = require('moonloader') -- download_status for the update check.
 local sampev = require('samp.events')
 local encoding = require('encoding')
 encoding.default = 'CP1251'
 local u8 = encoding.UTF8
 local function cp(s) return u8:decode(s) end
 
-local tag = '{FFA500}[TM] Dialog Plus{FFFFFF}: '
-local FORUM_URL = 'https://www.blast.hk/threads/256216/'
+local tag = '{FFA31A}[ArzHub] Dialog Plus{FFFFFF}: '
 
 local function notify(text)
     sampAddChatMessage(tag .. cp(text), -1)
@@ -234,14 +234,14 @@ local function pressDigit(d)
 end
 
 -- ============================================================================
--- SELF-UPDATE (/dpupdate)
+-- UPDATES (/dpupdate): only through the ArzHub manager, the script just says where to get them
 -- ============================================================================
 
-local UPDATE_MANIFEST_URL = 'https://raw.githubusercontent.com/TheMY3/arzhub-scripts/main/manifest.json'
-local UPDATE_BASE_URL = 'https://raw.githubusercontent.com/TheMY3/arzhub-scripts/main/'
+local UPDATE_MANIFEST_URL = 'https://arzhub.top/hub/manifest.json'
 local UPDATE_SCRIPT_ID = 'dialog-plus'
 local UPDATE_MANIFEST_TIMEOUT = 10 -- seconds.
-local UPDATE_FILE_TIMEOUT = 30 -- seconds, file is bigger than the manifest.
+local MANAGER_URL = 'https://arzhub.top/hub'
+local VIA_MANAGER = 'Обновления - через менеджер ArzHub: {FFB48A}' .. MANAGER_URL
 
 -- "2.10.0" -> 2010000, so versions compare numerically.
 local function versionNum(v)
@@ -272,112 +272,19 @@ local function withTimeout(seconds, onTimeout)
     end
 end
 
--- current -> current.old, tmp -> current, rolled back on failure.
-local function atomicReplace(targetPath, tempPath)
-    local oldPath = targetPath .. '.old'
-    removeIfExists(oldPath)
-    if not os.rename(targetPath, oldPath) then
-        return false, 'не смог отложить текущий файл в сторону'
-    end
-    if not os.rename(tempPath, targetPath) then
-        os.rename(oldPath, targetPath)
-        return false, 'не смог поставить новый файл на место, откатил обратно'
-    end
-    return true
+-- Asked right before a line goes out, not at load: by then every script is loaded.
+local function managerRunning()
+    return script.find('ArzHub') ~= nil
 end
 
-local function manualUrl(entry)
-    return (entry and entry.topic and entry.topic ~= '') and entry.topic or FORUM_URL
-end
-
--- Most failures pass on their own: GitHub caches files for about 5 minutes.
-local UPDATE_RETRY = ', повторите через пару минут или скачайте вручную: {5CC9FF}'
-local UPDATE_FAIL_TEXT = {
-    timeout = 'Сервер не ответил' .. UPDATE_RETRY,
-    empty = 'Файл не скачался' .. UPDATE_RETRY,
-    broken = 'Пришёл битый файл' .. UPDATE_RETRY,
-    missing = 'Скрипта нет в списке версий, скачайте вручную: {5CC9FF}',
-    replace = 'Файл не заменился, старая версия на месте. Скачайте вручную: {5CC9FF}',
-}
-
-local function updateFailed(kind, entry)
-    notify(UPDATE_FAIL_TEXT[kind] .. manualUrl(entry))
-end
-
--- Set when the new file is in place; main() reloads on its next tick, so no thread of ours is left mid-call.
-local reloadPending = false
-
-local function finishUpdate(entry, tempPath)
-    local content = readFile(tempPath)
-    local gotVersion = content and content:match("script_version%(['\"]([%d%.]+)['\"]%)")
-
-    if not gotVersion then
-        removeIfExists(tempPath)
-        updateFailed('broken', entry)
-        return
-    end
-    if gotVersion == thisScript().version then
-        -- The CDN still serves the previous file right after a release.
-        removeIfExists(tempPath)
-        notify('Сервер ещё отдаёт старую версию, повторите через пару минут.')
-        return
-    end
-    if gotVersion ~= entry.version then
-        removeIfExists(tempPath)
-        -- The file and the manifest are cached separately, so this is the CDN too.
-        notify('Сервер отдал v' .. gotVersion .. ' вместо v' .. entry.version .. ', повторите через пару минут.')
-        return
-    end
-
-    local ok = atomicReplace(thisScript().path, tempPath)
-    if not ok then
-        removeIfExists(tempPath)
-        updateFailed('replace', entry)
-        return
-    end
-
-    -- ML-AutoReboot reloads a changed file by itself; a reload of ours on top kills the fresh copy mid-start.
-    if script.find('ML-AutoReboot') then
-        notify('Обновлено до {5CC9FF}v' .. entry.version .. '{FFFFFF}, скрипт перезагрузится сам.')
-        return
-    end
-    notify('Обновлено до {5CC9FF}v' .. entry.version .. '{FFFFFF}, перезагружаю скрипт...')
-    reloadPending = true
-end
-
-local function downloadUpdate(entry)
-    -- A second download from inside the first one's callback fails as busy, so wait a tick.
-    lua_thread.create(function()
-        wait(250)
-        local tempPath = thisScript().path .. '.tmp'
-        removeIfExists(tempPath)
-        local dl_status = moonloader.download_status
-        local claim = withTimeout(UPDATE_FILE_TIMEOUT, function()
-            removeIfExists(tempPath)
-            updateFailed('timeout', entry)
-        end)
-        -- Only the final status: at STATUS_ENDDOWNLOADDATA the file may not be in place yet.
-        downloadUrlToFile(UPDATE_BASE_URL .. entry.path, tempPath, function(_, status)
-            if status ~= dl_status.STATUSEX_ENDDOWNLOAD or not claim() then return end
-            local content = readFile(tempPath)
-            if not content or content == '' then
-                removeIfExists(tempPath)
-                updateFailed('empty', entry)
-                return
-            end
-            finishUpdate(entry, tempPath)
-        end)
-    end)
-end
-
--- Exactly one of onEntry(entry) / onError(kind) fires, kind being a key of UPDATE_FAIL_TEXT.
+-- Exactly one of onEntry(entry) / onError() fires.
 local function fetchManifestEntry(onEntry, onError)
     local manifestPath = thisScript().path .. '.manifest.tmp'
     removeIfExists(manifestPath)
     local dl_status = moonloader.download_status
     local claim = withTimeout(UPDATE_MANIFEST_TIMEOUT, function()
         removeIfExists(manifestPath)
-        onError('timeout')
+        onError()
     end)
 
     -- Only the final status: at STATUS_ENDDOWNLOADDATA the file may not be in place yet, and decodeJson('') is logged as an exception even under pcall.
@@ -386,57 +293,59 @@ local function fetchManifestEntry(onEntry, onError)
         local content = readFile(manifestPath)
         removeIfExists(manifestPath)
         if not content or content == '' then
-            onError('empty')
+            onError()
             return
         end
         local ok, data = pcall(decodeJson, content)
         if not ok or type(data) ~= 'table' or not data.scripts then
-            onError('broken')
+            onError()
             return
         end
-
-        local entry
         for _, item in ipairs(data.scripts) do
-            if item.id == UPDATE_SCRIPT_ID then entry = item break end
+            if item.id == UPDATE_SCRIPT_ID then
+                onEntry(item)
+                return
+            end
         end
-        if not entry then
-            onError('missing')
-            return
-        end
-        onEntry(entry)
+        onError()
     end)
 end
 
--- Strictly "remote > local": a newer local build is never rolled back.
+-- Strictly "remote > local": a newer local build is never offered an older one.
 local function isNewer(entry)
     local remote, current = versionNum(entry.version), versionNum(thisScript().version)
     return remote and current and remote > current
 end
 
+local function newVersionText(entry)
+    return 'Вышла {FFB48A}v' .. entry.version .. '{FFFFFF}. Обновить можно через менеджер ArzHub: {FFB48A}' .. MANAGER_URL
+end
+
 local function checkForUpdate()
-    notify('Проверяю обновления...')
+    if managerRunning() then
+        notify('Обновления - через менеджер: {FFB48A}/hub')
+        return
+    end
     fetchManifestEntry(
         function(entry)
-            if not isNewer(entry) then
-                notify('У вас последняя версия (v' .. thisScript().version .. ').')
-                return
+            if isNewer(entry) then
+                notify(newVersionText(entry))
+            else
+                notify('У вас последняя версия {FFB48A}v' .. thisScript().version .. '{FFFFFF}. ' .. VIA_MANAGER)
             end
-            notify('Найдено обновление: v' .. entry.version .. '. Скачиваю...')
-            downloadUpdate(entry)
         end,
-        function(kind)
-            updateFailed(kind)
+        function()
+            notify('Не удалось проверить обновления. ' .. VIA_MANAGER)
         end
     )
 end
 
--- Once at load: silent unless an update exists, never downloads by itself.
+-- Once at load, and only without the manager: silent unless a new version is out.
 local function checkForUpdateSilently()
+    if managerRunning() then return end
     fetchManifestEntry(
         function(entry)
-            if isNewer(entry) then
-                notify('Доступна новая версия {5CC9FF}v' .. entry.version .. '{FFFFFF}! Обновить: {5CC9FF}/dpupdate')
-            end
+            if isNewer(entry) and not managerRunning() then notify(newVersionText(entry)) end
         end,
         function() end
     )
@@ -451,23 +360,18 @@ end
 
 function main()
     while not isSampAvailable() do wait(0) end
-    -- Leftovers of an interrupted update; .old stays as the way back.
+    -- Leftovers of an interrupted update by an older build; .old stays as the way back.
     removeIfExists(thisScript().path .. '.tmp')
     removeIfExists(thisScript().path .. '.manifest.tmp')
     wait(1500)
 
-    notify('Загружен {5CC9FF}v' .. thisScript().version .. '{FFFFFF}. В списках пункт выбирается цифрой, повторное нажатие подтверждает. В «Забрать» есть кнопка MAX.')
+    notify('Загружен {FFB48A}v' .. thisScript().version .. '{FFFFFF}. В списках пункт выбирается цифрой, повторное нажатие подтверждает. В «Забрать» есть кнопка MAX.')
     sampRegisterChatCommand('dpupdate', checkForUpdate)
     checkForUpdateSilently()
 
     local sentMode = false -- false = nothing sent yet, nil = no dialog.
     while true do
         wait(0)
-        if reloadPending then
-            reloadPending = false
-            thisScript():reload()
-            return
-        end
         local mode = (isListDialog() and 'list') or (isInputDialog() and 'input') or nil
         if needBoot or mode ~= sentMode then
             needBoot = false
