@@ -1,6 +1,6 @@
 script_name('Dialog Plus')
 script_author('ArzHub')
-script_version('1.3.0')
+script_version('1.3.1')
 script_url('https://arzhub.top/hub/dialog-plus')
 
 -- Forum topic (current version, discussion): https://www.blast.hk/threads/256216/
