@@ -153,8 +153,8 @@
     {
       "id": "auto-spawn",
       "name": "Auto Spawn",
-      "filename": "[TheMY3] Auto Spawn.lua",
-      "version": "1.0.2",
+      "filename": "[ArzHub] Auto Spawn.lua",
+      "version": "1.1.0",
       "path": "scripts/auto-spawn.lua",
       "topic": "https://www.blast.hk/threads/258154/",
       "actual": true,
@@ -187,11 +187,22 @@
             "Понятнее сообщения при неудачном обновлении: что случилось и когда повторить.",
             "Надёжнее перезапуск после обновления: больше не перезапускается дважды вместе с ML-AutoReboot."
           ]
+        },
+        {
+          "version": "1.1.0",
+          "date": "2026-11-06",
+          "notes": [
+            "Обновления скрипта теперь через менеджер ArzHub.",
+            "Новый тег в чате: [ArzHub] Auto Spawn.",
+            "Файл скрипта теперь называется [ArzHub] Auto Spawn.lua."
+          ]
         }
       ],
       "description": "Автоспавн в выбранное место: отметьте место звёздочкой в окне выбора спавна, и после отсчёта игра начнётся сама.",
       "usage": "Работает только с новой авторизацией, она включается в настройках лаунчера. Отсчёт отменяется выбором другого места, а автоспавн выключается, если снять звёздочку.",
-      "alt_filenames": [],
+      "alt_filenames": [
+        "[TheMY3] Auto Spawn.lua"
+      ],
       "page": "https://arzhub.top/hub/auto-spawn"
     },
     {
