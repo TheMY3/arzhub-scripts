@@ -272,8 +272,8 @@
     {
       "id": "battlepass-helper",
       "name": "BattlePass Helper",
-      "filename": "[TheMY3] BattlePass Helper.lua",
-      "version": "1.2.3",
+      "filename": "[ArzHub] BattlePass Helper.lua",
+      "version": "1.3.0",
       "path": "scripts/battlepass-helper.lua",
       "topic": "https://www.blast.hk/threads/257000/",
       "actual": true,
@@ -307,6 +307,15 @@
           "notes": [
             "Клавиша обновления снова подтягивает задания, пока идёт ивент-пропуск: скрипт сам выбирает Battle Pass в окне выбора пропуска."
           ]
+        },
+        {
+          "version": "1.3.0",
+          "date": "2026-11-07",
+          "notes": [
+            "Обновления скрипта теперь через менеджер ArzHub.",
+            "Новый тег в чате: [ArzHub] BattlePass Helper.",
+            "Файл скрипта теперь называется [ArzHub] BattlePass Helper.lua."
+          ]
         }
       ],
       "description": "Задания боевого пропуска всегда на экране: прогресс цифрами, автоотметка выполненных, закрепление, скрытие и таймер до сброса заданий.",
@@ -321,7 +330,9 @@
           "desc": "обновить список заданий в начале нового сезона"
         }
       ],
-      "alt_filenames": [],
+      "alt_filenames": [
+        "[TheMY3] BattlePass Helper.lua"
+      ],
       "page": "https://arzhub.top/hub/battlepass-helper"
     },
     {

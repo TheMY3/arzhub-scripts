@@ -1,11 +1,12 @@
 script_name('BattlePass Helper')
-script_author('TheMY3')
-script_version('1.2.3')
+script_author('ArzHub')
+script_version('1.3.0')
+script_url('https://arzhub.top/hub/battlepass-helper')
 
 -- Тема на форуме (актуальная версия, обсуждение): https://www.blast.hk/threads/257000/
 
 local imgui = require 'mimgui'
-local moonloader = require 'moonloader'  -- Needed for moonloader.download_status (self-update).
+local moonloader = require 'moonloader'  -- Needed for moonloader.download_status (the update check).
 local sampev = require 'samp.events'
 local inicfg = require 'inicfg'
 local effil = require 'effil'
@@ -22,12 +23,25 @@ local new = imgui.new
 -- Constants
 -- =========================================================================
 
-local TAG = '{FFA500}[TM] BattlePass Helper{FFFFFF}: '
-local FORUM_URL = 'https://www.blast.hk/threads/257000/'  -- Manual fallback when self-update fails.
+local TAG = '{FFA31A}[ArzHub] BattlePass Helper{FFFFFF}: '
 local API_URL = 'https://server-api.arizona.games/client/json/table/get?project=arizona&server=1&key=bp_mission_default'
 
 -- inicfg wants a path relative to moonloader/config, io and createDirectory want an absolute one, so both are built from the same piece.
-local CFG_SUB = 'TheMY3/battlepass'
+local CFG_SUB = 'ArzHub/battlepass-helper'
+
+-- One-time move of the whole folder from the old place, before the first read; a failed move keeps the old folder and is retried next load.
+do
+    local base = getWorkingDirectory() .. '\\config\\'
+    local old, new = base .. 'TheMY3\\battlepass', base .. 'ArzHub\\battlepass-helper'
+    if not doesDirectoryExist(new) and doesDirectoryExist(old) then
+        createDirectory(base .. 'ArzHub')
+        if not os.rename(old, new) then
+            print('config move failed, still using ' .. old)
+            CFG_SUB = 'TheMY3/battlepass'
+        end
+    end
+end
+
 local CFG_PATH = CFG_SUB .. '/config.ini'
 local CFG_DIR = getWorkingDirectory() .. '\\config\\' .. (CFG_SUB:gsub('/', '\\'))
 local CATALOG_PATH = CFG_DIR .. '\\catalog.json'
@@ -137,6 +151,15 @@ local function dumpIds(set)
     return table.concat(list, ',')
 end
 
+-- One level at a time: config\\ArzHub may not exist yet either.
+local function ensureCfgDir()
+    local dir = getWorkingDirectory() .. '\\config'
+    for part in CFG_SUB:gmatch('[^/]+') do
+        dir = dir .. '\\' .. part
+        if not doesDirectoryExist(dir) then createDirectory(dir) end
+    end
+end
+
 local function saveConfig()
     config.settings.overlay_desc = cfgDesc[0]
     config.settings.overlay_font = cfgFont[0]
@@ -144,7 +167,7 @@ local function saveConfig()
     config.state.pinned = dumpIds(pinned)
     config.state.hidden = dumpIds(hidden)
     config.state.blacklist = dumpIds(blacklist)
-    if not doesDirectoryExist(CFG_DIR) then createDirectory(CFG_DIR) end
+    ensureCfgDir()
     inicfg.save(config, CFG_PATH)
 end
 
@@ -171,7 +194,7 @@ local function chat(msg)
     sampAddChatMessage(TAG .. cyr(msg), -1)
 end
 
--- Whole file as a string, or nil when it is not there. Shared by the catalog cache and the self-update region.
+-- Whole file as a string, or nil when it is not there. Shared by the catalog cache and the update check.
 local function readFile(path)
     local f = io.open(path, 'rb')
     if not f then return nil end
@@ -230,7 +253,7 @@ local function applyCatalog(body)
 end
 
 local function saveCatalog(body)
-    if not doesDirectoryExist(CFG_DIR) then createDirectory(CFG_DIR) end
+    ensureCfgDir()
     local f = io.open(CATALOG_PATH, 'wb')
     if not f then return end
     f:write(body)
@@ -980,7 +1003,7 @@ function onReceivePacket(id, bs)
             if weOpened and os.clock() < refreshDeadline then
                 weOpened = false
                 sendCef('eventPass.exit')
-                chat('Окно выбора пропуска изменилось: поставь {5CC9FF}CHOOSER_BP_CARD = '
+                chat('Окно выбора пропуска изменилось: поставь {FFB48A}CHOOSER_BP_CARD = '
                     .. (1 - CHOOSER_BP_CARD) .. '{FFFFFF} в начале скрипта')
             end
 
@@ -1053,29 +1076,28 @@ function sampev.onServerMessage(color, rawText)
 end
 
 -- =========================================================================
--- Self-update
+-- UPDATES (/bpupdate): only through the ArzHub manager, the script just says where to get them
 -- =========================================================================
 
-local UPDATE_MANIFEST_URL = 'https://raw.githubusercontent.com/TheMY3/arzhub-scripts/main/manifest.json'
-local UPDATE_BASE_URL = 'https://raw.githubusercontent.com/TheMY3/arzhub-scripts/main/'
+local UPDATE_MANIFEST_URL = 'https://arzhub.top/hub/manifest.json'
 local UPDATE_SCRIPT_ID = 'battlepass-helper'
 local UPDATE_MANIFEST_TIMEOUT = 10 -- seconds.
-local UPDATE_FILE_TIMEOUT = 30 -- seconds, file is bigger than the manifest.
+local MANAGER_URL = 'https://arzhub.top/hub'
+local VIA_MANAGER = 'Обновления - через менеджер ArzHub: {FFB48A}' .. MANAGER_URL
 
--- "2.10.0" -> 2010000, so remote/local compare numerically instead of lexicographically. Nothing to keep in sync manually, unlike a stored version_num.
+-- "2.10.0" -> 2010000, so versions compare numerically.
 local function versionNum(v)
     local a, b, c = tostring(v or ''):match('^(%d+)%.(%d+)%.(%d+)$')
     if not a then return nil end
     return tonumber(a) * 1000000 + tonumber(b) * 1000 + tonumber(c)
 end
 
--- os.remove is called unguarded on purpose: with doesFileExist in front leftovers survived the cleanup on a real client, and removing a file that is not there is a harmless no-op.
+-- Unguarded on purpose: removing a missing file is a harmless no-op.
 local function removeIfExists(path)
     return os.remove(path)
 end
 
--- Guards an async downloadUrlToFile callback with a timeout: whichever of {the real callback, the timeout} fires first wins and calls its own logic; the loser is a silent no-op.
--- downloadUrlToFile has no cancel API, so a late callback after a timeout isn't stopped - it just finds the claim already taken and does nothing.
+-- Whichever of {callback, timeout} fires first wins, the other one is a no-op.
 local function withTimeout(seconds, onTimeout)
     local done = false
     lua_thread.create(function()
@@ -1092,113 +1114,19 @@ local function withTimeout(seconds, onTimeout)
     end
 end
 
--- current -> current.old, tmp -> current; rolls back on failure so a broken rename never leaves neither file in place. current.old is left behind on success as a manual-recovery copy.
-local function atomicReplace(targetPath, tempPath)
-    local oldPath = targetPath .. '.old'
-    removeIfExists(oldPath)
-    if not os.rename(targetPath, oldPath) then
-        return false, 'не смог отложить текущий файл в сторону'
-    end
-    if not os.rename(tempPath, targetPath) then
-        os.rename(oldPath, targetPath) -- rollback
-        return false, 'не смог поставить новый файл на место, откатил обратно'
-    end
-    return true
+-- Asked right before a line goes out, not at load: by then every script is loaded.
+local function managerRunning()
+    return script.find('ArzHub') ~= nil
 end
 
-local function manualUrl(entry)
-    return (entry and entry.topic and entry.topic ~= '') and entry.topic or FORUM_URL
-end
-
--- Most failures pass on their own: GitHub caches files for about 5 minutes.
-local UPDATE_RETRY = ', повторите через пару минут или скачайте вручную: {5CC9FF}'
-local UPDATE_FAIL_TEXT = {
-    timeout = 'Сервер не ответил' .. UPDATE_RETRY,
-    empty = 'Файл не скачался' .. UPDATE_RETRY,
-    broken = 'Пришёл битый файл' .. UPDATE_RETRY,
-    missing = 'Скрипта нет в списке версий, скачайте вручную: {5CC9FF}',
-    replace = 'Файл не заменился, старая версия на месте. Скачайте вручную: {5CC9FF}',
-}
-
-local function updateFailed(kind, entry)
-    chat(UPDATE_FAIL_TEXT[kind] .. manualUrl(entry))
-end
-
--- Set when the new file is in place; main() reloads on its next tick, so no thread of ours is left mid-call.
-local reloadPending = false
-
-local function finishUpdate(entry, tempPath)
-    local content = readFile(tempPath)
-    local gotVersion = content and content:match("script_version%(['\"]([%d%.]+)['\"]%)")
-
-    if not gotVersion then
-        removeIfExists(tempPath)
-        updateFailed('broken', entry)
-        return
-    end
-    if gotVersion == thisScript().version then
-        -- Manifest already points at the new version but the raw.githubusercontent.com CDN edge is still serving the previous file - a stale-cache race, not a real failure.
-        removeIfExists(tempPath)
-        chat('Сервер ещё отдаёт старую версию, повторите через пару минут.')
-        return
-    end
-    if gotVersion ~= entry.version then
-        removeIfExists(tempPath)
-        -- The file and the manifest are cached separately, so this is the CDN too.
-        chat('Сервер отдал v' .. gotVersion .. ' вместо v' .. entry.version .. ', повторите через пару минут.')
-        return
-    end
-
-    local ok, err = atomicReplace(thisScript().path, tempPath)
-    if not ok then
-        removeIfExists(tempPath)
-        updateFailed('replace', entry)
-        return
-    end
-
-    -- ML-AutoReboot reloads a changed file by itself; a reload of ours on top kills the fresh copy mid-start.
-    if script.find('ML-AutoReboot') then
-        chat('Обновлено до {5CC9FF}v' .. entry.version .. '{FFFFFF}, скрипт перезагрузится сам.')
-        return
-    end
-    chat('Обновлено до {5CC9FF}v' .. entry.version .. '{FFFFFF}, перезагружаю скрипт...')
-    reloadPending = true
-end
-
-local function downloadUpdate(entry)
-    -- Called from inside the manifest downloadUrlToFile's own callback - calling downloadUrlToFile again immediately (same tick) throws "device or resource busy", the native
-    -- downloader hasn't released its handle yet. A tick of delay in its own thread fixes it.
-    lua_thread.create(function()
-        wait(250)
-        local tempPath = thisScript().path .. '.tmp'
-        removeIfExists(tempPath)
-        local dl_status = moonloader.download_status
-        local claim = withTimeout(UPDATE_FILE_TIMEOUT, function()
-            removeIfExists(tempPath)
-            updateFailed('timeout', entry)
-        end)
-        -- Only the final status: at STATUS_ENDDOWNLOADDATA the file may not be in place yet.
-        downloadUrlToFile(UPDATE_BASE_URL .. entry.path, tempPath, function(_, status)
-            if status ~= dl_status.STATUSEX_ENDDOWNLOAD or not claim() then return end
-            local content = readFile(tempPath)
-            if not content or content == '' then
-                removeIfExists(tempPath)
-                updateFailed('empty', entry)
-                return
-            end
-            finishUpdate(entry, tempPath)
-        end)
-    end)
-end
-
--- Fetches manifest.json and hands the entry for UPDATE_SCRIPT_ID to onEntry(entry). onError(why) covers everything else (fetch failure, timeout, bad JSON, missing entry) - exactly one fires.
+-- Exactly one of onEntry(entry) / onError() fires.
 local function fetchManifestEntry(onEntry, onError)
     local manifestPath = thisScript().path .. '.manifest.tmp'
     removeIfExists(manifestPath)
     local dl_status = moonloader.download_status
     local claim = withTimeout(UPDATE_MANIFEST_TIMEOUT, function()
         removeIfExists(manifestPath)
-        onError('timeout')
+        onError()
     end)
 
     -- Only the final status: at STATUS_ENDDOWNLOADDATA the file may not be in place yet, and decodeJson('') is logged as an exception even under pcall.
@@ -1207,55 +1135,59 @@ local function fetchManifestEntry(onEntry, onError)
         local content = readFile(manifestPath)
         removeIfExists(manifestPath)
         if not content or content == '' then
-            onError('empty')
+            onError()
             return
         end
         local ok, data = pcall(decodeJson, content)
-        if not ok or not data or not data.scripts then
-            onError('broken')
+        if not ok or type(data) ~= 'table' or not data.scripts then
+            onError()
             return
         end
-
-        local entry
         for _, item in ipairs(data.scripts) do
-            if item.id == UPDATE_SCRIPT_ID then entry = item break end
+            if item.id == UPDATE_SCRIPT_ID then
+                onEntry(item)
+                return
+            end
         end
-        if not entry then
-            onError('missing')
-            return
-        end
-        onEntry(entry)
+        onError()
     end)
 end
 
+-- Strictly "remote > local": a newer local build is never offered an older one.
+local function isNewer(entry)
+    local remote, current = versionNum(entry.version), versionNum(thisScript().version)
+    return remote and current and remote > current
+end
+
+local function newVersionText(entry)
+    return 'Вышла {FFB48A}v' .. entry.version .. '{FFFFFF}. Обновить можно через менеджер ArzHub: {FFB48A}' .. MANAGER_URL
+end
+
 local function checkForUpdate()
-    chat('Проверяю обновления...')
+    if managerRunning() then
+        chat('Обновления - через менеджер: {FFB48A}/hub')
+        return
+    end
     fetchManifestEntry(
         function(entry)
-            -- Strictly "remote > local", not "remote ~= local" - downgrade is intentionally unsupported (a manifest rollback would otherwise fight a newer local dev build).
-            local remote, current = versionNum(entry.version), versionNum(thisScript().version)
-            if not remote or not current or remote <= current then
-                chat('У вас последняя версия (v' .. thisScript().version .. ').')
-                return
+            if isNewer(entry) then
+                chat(newVersionText(entry))
+            else
+                chat('У вас последняя версия {FFB48A}v' .. thisScript().version .. '{FFFFFF}. ' .. VIA_MANAGER)
             end
-            chat('Найдено обновление: v' .. entry.version .. '. Скачиваю...')
-            downloadUpdate(entry)
         end,
-        function(kind)
-            updateFailed(kind)
+        function()
+            chat('Не удалось проверить обновления. ' .. VIA_MANAGER)
         end
     )
 end
 
--- Passive check fired once at load: silent when there's nothing to report (up to date, manifest unreachable, whatever) - one line when an update actually exists. Never downloads
--- anything itself, just points at the update command.
+-- Once at load, and only without the manager: silent unless a new version is out.
 local function checkForUpdateSilently()
+    if managerRunning() then return end
     fetchManifestEntry(
         function(entry)
-            local remote, current = versionNum(entry.version), versionNum(thisScript().version)
-            if remote and current and remote > current then
-                chat('Доступна новая версия {5CC9FF}v' .. entry.version .. '{FFFFFF}! Обновить: {5CC9FF}/bpupdate')
-            end
+            if isNewer(entry) and not managerRunning() then chat(newVersionText(entry)) end
         end,
         function() end
     )
@@ -1268,15 +1200,14 @@ end
 function main()
     while not isSampAvailable() do wait(100) end
 
-    -- Remnants of an interrupted update (game closed mid-download etc.) - clean before anything else.
-    -- .old is deliberately not touched: it is the previous build, the only way back from an update that turned out broken. One generation at most - atomicReplace overwrites it every time. MoonLoader will not pick it up, the extension is not .lua.
+    -- Leftovers of the old self-updater; .old stays as the way back to the previous build.
     removeIfExists(thisScript().path .. '.tmp')
     removeIfExists(thisScript().path .. '.manifest.tmp')
 
-    chat('Загружен {5CC9FF}v' .. thisScript().version .. '{FFFFFF}. Список: {5CC9FF}/bp'
-        .. '{FFFFFF}. Режим: {5CC9FF}' .. keyLabel(config.settings.toggle_key)
-        .. '{FFFFFF}. Обновить: {5CC9FF}' .. keyLabel(config.settings.refresh_key)
-        .. '{FFFFFF}. Каталог: {5CC9FF}/bpload')
+    chat('Загружен {FFB48A}v' .. thisScript().version .. '{FFFFFF}. Список: {FFB48A}/bp'
+        .. '{FFFFFF}. Режим: {FFB48A}' .. keyLabel(config.settings.toggle_key)
+        .. '{FFFFFF}. Обновить: {FFB48A}' .. keyLabel(config.settings.refresh_key)
+        .. '{FFFFFF}. Каталог: {FFB48A}/bpload')
 
     -- Catalog first: without it a snapshot has nothing to join against.
     if not loadCatalogFromDisk() then
@@ -1314,11 +1245,6 @@ function main()
 
     while true do
         wait(0)
-        if reloadPending then
-            reloadPending = false
-            thisScript():reload()
-            return
-        end
 
         -- A press already spent on a binding stays swallowed until the key is physically released, otherwise it fires the hotkey it just became.
         if bindHeld and not isKeyDown(bindHeld) then bindHeld = nil end
