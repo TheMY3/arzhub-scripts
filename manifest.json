@@ -306,7 +306,7 @@
       "id": "battlepass-helper",
       "name": "BattlePass Helper",
       "filename": "[ArzHub] BattlePass Helper.lua",
-      "version": "1.3.0",
+      "version": "1.4.0",
       "path": "scripts/battlepass-helper.lua",
       "topic": "https://www.blast.hk/threads/257000/",
       "actual": true,
@@ -348,6 +348,13 @@
             "Обновления скрипта теперь через менеджер ArzHub.",
             "Новый тег в чате: [ArzHub] BattlePass Helper.",
             "Файл скрипта теперь называется [ArzHub] BattlePass Helper.lua."
+          ]
+        },
+        {
+          "version": "1.4.0",
+          "date": "2026-11-07",
+          "notes": [
+            "Окна в цветах ArzHub."
           ]
         }
       ],
