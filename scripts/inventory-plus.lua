@@ -1,6 +1,7 @@
-script_name('[TM] Inventory Plus')
-script_author('TheMY3')
-script_version('2.7.0')
+script_name('Inventory Plus')
+script_author('ArzHub')
+script_version('2.8.0')
+script_url('https://arzhub.top/hub/inventory-plus')
 
 -- Тема на форуме (актуальная версия, обсуждение): https://www.blast.hk/threads/255785/
 
@@ -11,7 +12,7 @@ local u8 = encoding.UTF8
 
 local function cp(s) return u8:decode(s) end
 
-local tag = '{FFA500}[TM] Inventory Plus{FFFFFF}: '
+local tag = '{FFA31A}[ArzHub] Inventory Plus{FFFFFF}: '
 
 -- Срез словаря имён: 'all' = все предметы, 'market' = только торгуемые на маркете.
 -- Если с 'all' словарь грузится слишком долго или не грузится вовсе (в поиске висит «ЗАГРУЗКА...» или «СПИСОК НЕ ЗАГРУЖЕН») — поменяйте на 'market' (менять только слово в кавычках) и перезапустите игру.
@@ -747,7 +748,7 @@ local function notifyToast(kind, title, text, ms)
         :format(esc(kind), esc(cp(title)), esc(cp(text)), esc(tostring(ms))))
 end
 
--- Shared by both regions below (dict cache reading and update-manifest reading).
+-- Shared by the dict cache and the update check.
 local function readFile(path)
     local f = io.open(path, 'rb')
     if not f then return nil end
@@ -827,7 +828,19 @@ function onReceivePacket(id, bs)
 end
 
 -- Separate from the JS-side dictionary (used for the search UI) - fetched once via plain Lua HTTP, cached to disk.
-local DICT_CACHE_DIR = getWorkingDirectory() .. '\\config\\TheMY3\\inventory-plus'
+local DICT_CACHE_DIR = getWorkingDirectory() .. '\\config\\ArzHub\\inventory-plus'
+
+-- One-time move of the cache folder from the old place; a failed move keeps the old folder and is retried next load.
+do
+    local old = getWorkingDirectory() .. '\\config\\TheMY3\\inventory-plus'
+    if not doesDirectoryExist(DICT_CACHE_DIR) and doesDirectoryExist(old) then
+        createDirectory(getWorkingDirectory() .. '\\config\\ArzHub')
+        if not os.rename(old, DICT_CACHE_DIR) then
+            print('cache move failed, still using ' .. old)
+            DICT_CACHE_DIR = old
+        end
+    end
+end
 local DICT_CACHE_PATH = DICT_CACHE_DIR .. '\\items-' .. DICT_MODE .. '.json'
 local DICT_URL = 'https://arzhub.top/api/public/marketplace/items/' .. DICT_MODE
 
@@ -866,7 +879,11 @@ local function fetchNamesDict(onDone)
 
     namesFetching = true
     sampAddChatMessage(tag .. cp('Качаю словарь имён (разово за сессию)...'), -1)
-    if not doesDirectoryExist(DICT_CACHE_DIR) then createDirectory(DICT_CACHE_DIR) end
+    -- One level at a time: config\\ArzHub may not exist yet either.
+    if not doesDirectoryExist(DICT_CACHE_DIR) then
+        createDirectory(getWorkingDirectory() .. '\\config\\ArzHub')
+        createDirectory(DICT_CACHE_DIR)
+    end
 
     local claimed = false
     lua_thread.create(function()
@@ -909,13 +926,13 @@ local UTF8_BOM = '\239\187\191'
 
 local function doExport()
     if not lastOpenType or not invBuf[lastOpenType] then
-        sampAddChatMessage(tag .. cp('Сначала открой шкаф/склад/багажник (или любое другое окно с предметами) и повтори {5CC9FF}/ipexport'), -1)
+        sampAddChatMessage(tag .. cp('Сначала открой шкаф/склад/багажник (или любое другое окно с предметами) и повтори {FFB48A}/ipexport'), -1)
         return
     end
 
     fetchNamesDict(function(names)
         if not names then
-            sampAddChatMessage(tag .. cp('Не удалось скачать словарь имён (нет сети или таймаут). Повтори {5CC9FF}/ipexport{FFFFFF}.'), -1)
+            sampAddChatMessage(tag .. cp('Не удалось скачать словарь имён (нет сети или таймаут). Повтори {FFB48A}/ipexport{FFFFFF}.'), -1)
             return
         end
 
@@ -957,7 +974,7 @@ local function doExport()
         f:write(UTF8_BOM .. table.concat(lines, '\r\n'))
         f:close()
 
-        sampAddChatMessage(tag .. cp('Экспортировано слотов: ') .. #slots .. cp(' -> {5CC9FF}') .. shortPath(fname), -1)
+        sampAddChatMessage(tag .. cp('Экспортировано слотов: ') .. #slots .. cp(' -> {FFB48A}') .. shortPath(fname), -1)
     end)
 end
 
@@ -1063,35 +1080,27 @@ function onSendPacket(id, bs)
 end
 --endregion
 
---region SELF-UPDATE
+--region UPDATES (/ipupdate): only through the ArzHub manager, the script just says where to get them
 
--- One silent, non-blocking check on load (never downloads, just a heads-up + the command to run); the actual download/install only ever happens via command.
--- Manifest + raw files served from github for now, but later want to try change it to myself.
-local UPDATE_MANIFEST_URL = 'https://raw.githubusercontent.com/TheMY3/arzhub-scripts/main/manifest.json'
-local UPDATE_BASE_URL = 'https://raw.githubusercontent.com/TheMY3/arzhub-scripts/main/'
+local UPDATE_MANIFEST_URL = 'https://arzhub.top/hub/manifest.json'
 local UPDATE_SCRIPT_ID = 'inventory-plus'
-local FORUM_URL = 'https://www.blast.hk/threads/255785/' -- Manual fallback when the manifest carries no topic.
-local UPDATE_MANIFEST_TIMEOUT = 10 -- seconds
-local UPDATE_FILE_TIMEOUT = 30 -- seconds, file is bigger than the manifest
+local UPDATE_MANIFEST_TIMEOUT = 10 -- seconds.
+local MANAGER_URL = 'https://arzhub.top/hub'
+local VIA_MANAGER = 'Обновления - через менеджер ArzHub: {FFB48A}' .. MANAGER_URL
 
-local function updateStatus(msg)
-    sampAddChatMessage(tag .. cp(msg), -1)
-end
-
--- "2.10.0" -> 2010000, so remote/local compare numerically instead of lexicographically. Nothing to keep in sync manually, unlike a stored version_num.
+-- "2.10.0" -> 2010000, so versions compare numerically.
 local function versionNum(v)
     local a, b, c = tostring(v or ''):match('^(%d+)%.(%d+)%.(%d+)$')
     if not a then return nil end
     return tonumber(a) * 1000000 + tonumber(b) * 1000 + tonumber(c)
 end
 
--- os.remove is called unguarded on purpose: with doesFileExist in front leftovers survived the cleanup on a real client, and removing a file that is not there is a harmless no-op.
+-- Unguarded on purpose: removing a missing file is a harmless no-op.
 local function removeIfExists(path)
     return os.remove(path)
 end
 
--- Guards an async downloadUrlToFile callback with a timeout: whichever of {the real callback, the timeout} fires first wins and calls its own logic; the loser is a silent no-op.
--- downloadUrlToFile has no cancel API, so a late callback after a timeout isn't stopped — it just finds the claim already taken and does nothing.
+-- Whichever of {callback, timeout} fires first wins, the other one is a no-op.
 local function withTimeout(seconds, onTimeout)
     local done = false
     lua_thread.create(function()
@@ -1108,116 +1117,23 @@ local function withTimeout(seconds, onTimeout)
     end
 end
 
--- current -> current.old, tmp -> current; rolls back on failure so a broken rename never leaves neither file in place. current.old is left behind on success as a manual-recovery
--- copy.
-local function atomicReplace(targetPath, tempPath)
-    local oldPath = targetPath .. '.old'
-    removeIfExists(oldPath)
-    if not os.rename(targetPath, oldPath) then
-        return false, 'не смог отложить текущий файл в сторону'
-    end
-    if not os.rename(tempPath, targetPath) then
-        os.rename(oldPath, targetPath) -- rollback
-        return false, 'не смог поставить новый файл на место, откатил обратно'
-    end
-    return true
+local function updateStatus(msg)
+    sampAddChatMessage(tag .. cp(msg), -1)
 end
 
-local function manualUrl(entry)
-    return (entry and entry.topic and entry.topic ~= '') and entry.topic or FORUM_URL
+-- Asked right before a line goes out, not at load: by then every script is loaded.
+local function managerRunning()
+    return script.find('ArzHub') ~= nil
 end
 
--- Most failures pass on their own: GitHub caches files for about 5 minutes.
-local UPDATE_RETRY = ', повторите через пару минут или скачайте вручную: {5CC9FF}'
-local UPDATE_FAIL_TEXT = {
-    timeout = 'Сервер не ответил' .. UPDATE_RETRY,
-    empty = 'Файл не скачался' .. UPDATE_RETRY,
-    broken = 'Пришёл битый файл' .. UPDATE_RETRY,
-    missing = 'Скрипта нет в списке версий, скачайте вручную: {5CC9FF}',
-    replace = 'Файл не заменился, старая версия на месте. Скачайте вручную: {5CC9FF}',
-}
-
-local function updateFailed(kind, entry)
-    updateStatus(UPDATE_FAIL_TEXT[kind] .. manualUrl(entry))
-end
-
--- Set when the new file is in place; main() reloads on its next tick, so no thread of ours is left mid-call.
-local reloadPending = false
-
-local function finishUpdate(entry, tempPath)
-    local content = readFile(tempPath)
-    local gotVersion = content and content:match("script_version%(['\"]([%d%.]+)['\"]%)")
-
-    if not gotVersion then
-        removeIfExists(tempPath)
-        updateFailed('broken', entry)
-        return
-    end
-    if gotVersion == thisScript().version then
-        -- Manifest already points at the new version but the raw.githubusercontent.com CDN
-        -- edge is still serving the previous file — a stale-cache race, not a real failure.
-        removeIfExists(tempPath)
-        updateStatus('Сервер ещё отдаёт старую версию, повторите через пару минут.')
-        return
-    end
-    if gotVersion ~= entry.version then
-        removeIfExists(tempPath)
-        -- The file and the manifest are cached separately, so this is the CDN too.
-        updateStatus('Сервер отдал v' .. gotVersion .. ' вместо v' .. entry.version .. ', повторите через пару минут.')
-        return
-    end
-
-    local ok, err = atomicReplace(thisScript().path, tempPath)
-    if not ok then
-        removeIfExists(tempPath)
-        updateFailed('replace', entry)
-        return
-    end
-
-    -- ML-AutoReboot reloads a changed file by itself; a reload of ours on top kills the fresh copy mid-start.
-    if script.find('ML-AutoReboot') then
-        updateStatus('Обновлено до {5CC9FF}v' .. entry.version .. '{FFFFFF}, скрипт перезагрузится сам.')
-        return
-    end
-    updateStatus('Обновлено до {5CC9FF}v' .. entry.version .. '{FFFFFF}, перезагружаю скрипт...')
-    reloadPending = true
-end
-
-local function downloadUpdate(entry)
-    -- Called from inside the manifest downloadUrlToFile's own callback - calling downloadUrlToFile again immediately (same tick) throws "device or resource busy",
-    -- the native downloader hasn't released its handle yet. A tick of delay in its own thread fixes it - the same workaround Fire Helper uses before its own download call.
-    lua_thread.create(function()
-        wait(250)
-        local tempPath = thisScript().path .. '.tmp'
-        removeIfExists(tempPath)
-        local dl_status = moonloader.download_status
-        local claim = withTimeout(UPDATE_FILE_TIMEOUT, function()
-            removeIfExists(tempPath)
-            updateFailed('timeout', entry)
-        end)
-        -- Only the final status: at STATUS_ENDDOWNLOADDATA the file may not be in place yet.
-        downloadUrlToFile(UPDATE_BASE_URL .. entry.path, tempPath, function(_, status)
-            if status ~= dl_status.STATUSEX_ENDDOWNLOAD or not claim() then return end
-            local content = readFile(tempPath)
-            if not content or content == '' then
-                removeIfExists(tempPath)
-                updateFailed('empty', entry)
-                return
-            end
-            finishUpdate(entry, tempPath)
-        end)
-    end)
-end
-
--- Fetches manifest.json and hands the entry for UPDATE_SCRIPT_ID to onEntry(entry).
--- onError(why) covers everything else (fetch failure, timeout, bad JSON, missing entry) - exactly one fires.
+-- Exactly one of onEntry(entry) / onError() fires.
 local function fetchManifestEntry(onEntry, onError)
     local manifestPath = thisScript().path .. '.manifest.tmp'
     removeIfExists(manifestPath)
     local dl_status = moonloader.download_status
     local claim = withTimeout(UPDATE_MANIFEST_TIMEOUT, function()
         removeIfExists(manifestPath)
-        onError('timeout')
+        onError()
     end)
 
     -- Only the final status: at STATUS_ENDDOWNLOADDATA the file may not be in place yet, and decodeJson('') is logged as an exception even under pcall.
@@ -1226,57 +1142,59 @@ local function fetchManifestEntry(onEntry, onError)
         local content = readFile(manifestPath)
         removeIfExists(manifestPath)
         if not content or content == '' then
-            onError('empty')
+            onError()
             return
         end
         local ok, data = pcall(decodeJson, content)
-        if not ok or not data or not data.scripts then
-            onError('broken')
+        if not ok or type(data) ~= 'table' or not data.scripts then
+            onError()
             return
         end
-
-        local entry
-        for _, s in ipairs(data.scripts) do
-            if s.id == UPDATE_SCRIPT_ID then entry = s break end
+        for _, item in ipairs(data.scripts) do
+            if item.id == UPDATE_SCRIPT_ID then
+                onEntry(item)
+                return
+            end
         end
-        if not entry then
-            onError('missing')
-            return
-        end
-        onEntry(entry)
+        onError()
     end)
 end
 
+-- Strictly "remote > local": a newer local build is never offered an older one.
+local function isNewer(entry)
+    local remote, current = versionNum(entry.version), versionNum(thisScript().version)
+    return remote and current and remote > current
+end
+
+local function newVersionText(entry)
+    return 'Вышла {FFB48A}v' .. entry.version .. '{FFFFFF}. Обновить можно через менеджер ArzHub: {FFB48A}' .. MANAGER_URL
+end
+
 local function checkForUpdate()
-    updateStatus('Проверяю обновления...')
+    if managerRunning() then
+        updateStatus('Обновления - через менеджер: {FFB48A}/hub')
+        return
+    end
     fetchManifestEntry(
         function(entry)
-            -- Strictly "remote > local", not "remote ~= local" - downgrade is intentionally unsupported here (a manifest rollback would otherwise fight a newer local dev
-            -- build). Picking an older release on purpose is a separate, not-yet-built path: explicit version argument, fetched from that version's GitHub Release asset
-            -- (github.com/TheMY3/arzhub-scripts/releases/download/inventory-plus-vX.Y.Z/...), not from entry.path (which always serves the latest).
-            local remote, current = versionNum(entry.version), versionNum(thisScript().version)
-            if not remote or not current or remote <= current then
-                updateStatus('У вас последняя версия (v' .. thisScript().version .. ').')
-                return
+            if isNewer(entry) then
+                updateStatus(newVersionText(entry))
+            else
+                updateStatus('У вас последняя версия {FFB48A}v' .. thisScript().version .. '{FFFFFF}. ' .. VIA_MANAGER)
             end
-            updateStatus('Найдено обновление: v' .. entry.version .. '. Скачиваю...')
-            downloadUpdate(entry)
         end,
-        function(kind)
-            updateFailed(kind)
+        function()
+            updateStatus('Не удалось проверить обновления. ' .. VIA_MANAGER)
         end
     )
 end
 
--- Passive check fired once at load: silent when there's nothing to report (up to date, manifest unreachable, whatever) - one line when an update actually exists. Never downloads
--- anything itself, just points at the update command.
+-- Once at load, and only without the manager: silent unless a new version is out.
 local function checkForUpdateSilently()
+    if managerRunning() then return end
     fetchManifestEntry(
         function(entry)
-            local remote, current = versionNum(entry.version), versionNum(thisScript().version)
-            if remote and current and remote > current then
-                updateStatus('Доступна новая версия {5CC9FF}v' .. entry.version .. '{FFFFFF}! Обновить: {5CC9FF}/ipupdate')
-            end
+            if isNewer(entry) and not managerRunning() then updateStatus(newVersionText(entry)) end
         end,
         function() end
     )
@@ -1286,8 +1204,7 @@ end
 function main()
     while not isSampAvailable() do wait(0) end
 
-    -- Remnants of an interrupted update (game closed mid-download etc.) — clean before anything else.
-    -- .old is deliberately not touched: it is the previous build, the only way back from an update that turned out broken. One generation at most - atomicReplace overwrites it every time. MoonLoader will not pick it up, the extension is not .lua.
+    -- Leftovers of the old self-updater; .old stays as the way back to the previous build.
     removeIfExists(thisScript().path .. '.tmp')
     removeIfExists(thisScript().path .. '.manifest.tmp')
 
@@ -1302,21 +1219,15 @@ function main()
         checkForUpdate()
     end)
 
-    sampAddChatMessage(tag .. cp('Загружен {5CC9FF}v' .. thisScript().version .. '{FFFFFF}. Поиск и названия - в лавках, шкафах и складах.'), -1)
+    sampAddChatMessage(tag .. cp('Загружен {FFB48A}v' .. thisScript().version .. '{FFFFFF}. Поиск и названия - в лавках, шкафах и складах.'), -1)
     checkForUpdateSilently()
 
     -- Delay the first inject: CEF starts asynchronously.
     -- Then re-inject forever: it is the only way to catch a recreated CEF context (reconnect etc.), and within a live context the bootstrap's version guard makes it a cheap no-op.
     -- Local packet emulation — no network traffic.
     wait(2000)
-    -- Short tick so a pending reload does not wait for the next inject.
     local nextInject = 0
     while true do
-        if reloadPending then
-            reloadPending = false
-            thisScript():reload()
-            return
-        end
         if os.clock() >= nextInject then
             inject()
             nextInject = os.clock() + 5

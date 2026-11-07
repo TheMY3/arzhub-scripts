@@ -3,8 +3,8 @@
     {
       "id": "inventory-plus",
       "name": "Inventory Plus",
-      "filename": "[TheMY3] Inventory Plus.lua",
-      "version": "2.7.0",
+      "filename": "[ArzHub] Inventory Plus.lua",
+      "version": "2.8.0",
       "path": "scripts/inventory-plus.lua",
       "topic": "https://www.blast.hk/threads/255785/",
       "actual": true,
@@ -82,6 +82,15 @@
           "notes": [
             "Убрано своё закрепление предметов в инвентаре - в игре появилось родное. Метки и порядок от старого закрепления пропадут сами."
           ]
+        },
+        {
+          "version": "2.8.0",
+          "date": "2026-11-07",
+          "notes": [
+            "Обновления скрипта теперь через менеджер ArzHub.",
+            "Новый тег в чате: [ArzHub] Inventory Plus.",
+            "Файл скрипта теперь называется [ArzHub] Inventory Plus.lua."
+          ]
         }
       ],
       "description": "Добавляет вывод названий и поиск предметов в лавке, шкафах и т. п. Также можно забрать все предметы в один клик, отсортировать их по названию, есть кнопка MAX и подсказка стоимости предмета в лавке.",
@@ -92,7 +101,9 @@
           "desc": "обновить список названий предметов"
         }
       ],
-      "alt_filenames": [],
+      "alt_filenames": [
+        "[TheMY3] Inventory Plus.lua"
+      ],
       "page": "https://arzhub.top/hub/inventory-plus"
     },
     {
