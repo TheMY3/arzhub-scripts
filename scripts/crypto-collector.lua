@@ -1,12 +1,13 @@
-script_author('TheMY3')
-script_name('[TM] Crypto Collector')
-script_version('2.5.3')
+script_name('Crypto Collector')
+script_author('ArzHub')
+script_version('2.6.0')
+script_url('https://arzhub.top/hub/crypto-collector')
 
 -- Тема на форуме (актуальная версия, обсуждение): https://www.blast.hk/threads/243868/
 
 local sampev = require("samp.events")
 local inicfg = require('inicfg')
-local moonloader = require('moonloader')  -- Needed for moonloader.download_status (SELF-UPDATE region).
+local moonloader = require('moonloader')  -- Needed for moonloader.download_status (the update check).
 -- The window is built on mimgui, and not everyone has it. Hence the pcall: with no library the script still works like 2.3.0 - collection, history, settings from the ini, output to the chat.
 local hasWindow, imgui = pcall(require, 'mimgui')
 if not hasWindow then imgui = nil end
@@ -32,7 +33,23 @@ local function dialogKind(title)
 	return nil
 end
 
-local CONFIG_FILE = 'TheMY3\\crypto\\config.ini'
+-- Folder under moonloader\\config holding every file of the script.
+local CONFIG_SUB = 'ArzHub\\crypto-collector'
+
+-- One-time move of the whole folder from the old place, before the first read; a failed move keeps the old folder and is retried next load.
+do
+	local base = getWorkingDirectory() .. '\\config\\'
+	local old, new = base .. 'TheMY3\\crypto', base .. CONFIG_SUB
+	if not doesDirectoryExist(new) and doesDirectoryExist(old) then
+		createDirectory(base .. 'ArzHub')
+		if not os.rename(old, new) then
+			print('config move failed, still using ' .. old)
+			CONFIG_SUB = 'TheMY3\\crypto'
+		end
+	end
+end
+
+local CONFIG_FILE = CONFIG_SUB .. '\\config.ini'
 local DEBUG_TARGETS = {chat = true, log = true, both = true}
 local config = {
 	settings = {
@@ -69,17 +86,17 @@ local TICKER_ID = 690100  -- The server countdown timer occupies 690000.
 local TICKER_SHOW_TIME = 7000
 local TICKER_BADGE_COLOR = '#32CD32'  -- The badge shows the collected total.
 
-local tag = '{FFA500}[TM] Crypto Collector{FFFFFF}: '
-local FORUM_URL = 'https://www.blast.hk/threads/243868/'  -- Manual fallback when self-update fails, and the link in the help tab.
+local tag = '{FFA31A}[ArzHub] Crypto Collector{FFFFFF}: '
+local FORUM_URL = 'https://www.blast.hk/threads/243868/'  -- The link in the help tab.
 
+-- Made one level at a time: config\\ArzHub may not exist yet either.
 local function configDir()
-	local parent = getWorkingDirectory() .. '\\config\\TheMY3'
-	if not doesDirectoryExist(parent) then
-		createDirectory(parent)
-	end
-	local dir = parent .. '\\crypto'
-	if not doesDirectoryExist(dir) then
-		createDirectory(dir)
+	local dir = getWorkingDirectory() .. '\\config'
+	for part in CONFIG_SUB:gmatch('[^\\]+') do
+		dir = dir .. '\\' .. part
+		if not doesDirectoryExist(dir) then
+			createDirectory(dir)
+		end
 	end
 	return dir
 end
@@ -89,7 +106,7 @@ local function debugFilePath()
 	return configDir() .. '\\debug.log'
 end
 
---- Whole file as a string, or nil when it is not there. Shared by the history/config readers and by the SELF-UPDATE region.
+--- Whole file as a string, or nil when it is not there. Shared by the history/config readers and by the update check.
 local function readFile(path)
 	local f = io.open(path, 'rb')
 	if not f then return nil end
@@ -1325,7 +1342,7 @@ if hasWindow then
 		imgui.TextDisabled(txt('- настройки'))
 		imgui.Text(txt('/crupdate'))
 		imgui.SameLine()
-		imgui.TextDisabled(txt('- проверить и установить обновление'))
+		imgui.TextDisabled(txt('- проверить обновления (ставит менеджер ArzHub)'))
 		imgui.Text(txt('/crhelp'))
 		imgui.SameLine()
 		imgui.TextDisabled(txt('- эта справка'))
@@ -1474,31 +1491,27 @@ local function checkMiningToolActivity()
 	return doesFileExist(scriptPath)
 end
 
---region SELF-UPDATE
-local UPDATE_MANIFEST_URL = 'https://raw.githubusercontent.com/TheMY3/arzhub-scripts/main/manifest.json'
-local UPDATE_BASE_URL = 'https://raw.githubusercontent.com/TheMY3/arzhub-scripts/main/'
+--region UPDATES (/crupdate): only through the ArzHub manager, the script just says where to get them
+
+local UPDATE_MANIFEST_URL = 'https://arzhub.top/hub/manifest.json'
 local UPDATE_SCRIPT_ID = 'crypto-collector'
-local UPDATE_MANIFEST_TIMEOUT = 10 -- seconds
-local UPDATE_FILE_TIMEOUT = 30 -- seconds, file is bigger than the manifest
+local UPDATE_MANIFEST_TIMEOUT = 10 -- seconds.
+local MANAGER_URL = 'https://arzhub.top/hub'
+local VIA_MANAGER = 'Обновления - через менеджер ArzHub: {FFB48A}' .. MANAGER_URL
 
-local function updateStatus(msg)
-	sampAddChatMessage(tag .. cyr(msg), -1)
-end
-
--- "2.10.0" -> 2010000, so remote/local compare numerically instead of lexicographically. Nothing to keep in sync manually, unlike a stored version_num.
+-- "2.10.0" -> 2010000, so versions compare numerically.
 local function versionNum(v)
 	local a, b, c = tostring(v or ''):match('^(%d+)%.(%d+)%.(%d+)$')
 	if not a then return nil end
 	return tonumber(a) * 1000000 + tonumber(b) * 1000 + tonumber(c)
 end
 
--- os.remove is called unguarded on purpose: with doesFileExist in front leftovers survived the cleanup on a real client, and removing a file that is not there is a harmless no-op.
+-- Unguarded on purpose: removing a missing file is a harmless no-op.
 local function removeIfExists(path)
 	return os.remove(path)
 end
 
--- Guards an async downloadUrlToFile callback with a timeout: whichever of {the real callback, the timeout} fires first wins and calls its own logic; the loser is a silent no-op.
--- downloadUrlToFile has no cancel API, so a late callback after a timeout isn't stopped - it just finds the claim already taken and does nothing.
+-- Whichever of {callback, timeout} fires first wins, the other one is a no-op.
 local function withTimeout(seconds, onTimeout)
 	local done = false
 	lua_thread.create(function()
@@ -1515,113 +1528,23 @@ local function withTimeout(seconds, onTimeout)
 	end
 end
 
--- current -> current.old, tmp -> current; rolls back on failure so a broken rename never leaves neither file in place. current.old is left behind on success as a manual-recovery copy.
-local function atomicReplace(targetPath, tempPath)
-	local oldPath = targetPath .. '.old'
-	removeIfExists(oldPath)
-	if not os.rename(targetPath, oldPath) then
-		return false, 'не смог отложить текущий файл в сторону'
-	end
-	if not os.rename(tempPath, targetPath) then
-		os.rename(oldPath, targetPath) -- rollback
-		return false, 'не смог поставить новый файл на место, откатил обратно'
-	end
-	return true
+local function updateStatus(msg)
+	sampAddChatMessage(tag .. cyr(msg), -1)
 end
 
-local function manualUrl(entry)
-	return (entry and entry.topic and entry.topic ~= '') and entry.topic or FORUM_URL
+-- Asked right before a line goes out, not at load: by then every script is loaded.
+local function managerRunning()
+	return script.find('ArzHub') ~= nil
 end
 
--- Most failures pass on their own: GitHub caches files for about 5 minutes.
-local UPDATE_RETRY = ', повторите через пару минут или скачайте вручную: {5CC9FF}'
-local UPDATE_FAIL_TEXT = {
-	timeout = 'Сервер не ответил' .. UPDATE_RETRY,
-	empty = 'Файл не скачался' .. UPDATE_RETRY,
-	broken = 'Пришёл битый файл' .. UPDATE_RETRY,
-	missing = 'Скрипта нет в списке версий, скачайте вручную: {5CC9FF}',
-	replace = 'Файл не заменился, старая версия на месте. Скачайте вручную: {5CC9FF}',
-}
-
-local function updateFailed(kind, entry)
-	updateStatus(UPDATE_FAIL_TEXT[kind] .. manualUrl(entry))
-end
-
--- Set when the new file is in place; main() reloads on its next tick, so no thread of ours is left mid-call.
-local reloadPending = false
-
-local function finishUpdate(entry, tempPath)
-	local content = readFile(tempPath)
-	local gotVersion = content and content:match("script_version%(['\"]([%d%.]+)['\"]%)")
-
-	if not gotVersion then
-		removeIfExists(tempPath)
-		updateFailed('broken', entry)
-		return
-	end
-	if gotVersion == thisScript().version then
-		-- Manifest already points at the new version but the raw.githubusercontent.com CDN edge is still serving the previous file - a stale-cache race, not a real failure.
-		removeIfExists(tempPath)
-		updateStatus('Сервер ещё отдаёт старую версию, повторите через пару минут.')
-		return
-	end
-	if gotVersion ~= entry.version then
-		removeIfExists(tempPath)
-		-- The file and the manifest are cached separately, so this is the CDN too.
-		updateStatus('Сервер отдал v' .. gotVersion .. ' вместо v' .. entry.version .. ', повторите через пару минут.')
-		return
-	end
-
-	local ok, err = atomicReplace(thisScript().path, tempPath)
-	if not ok then
-		removeIfExists(tempPath)
-		updateFailed('replace', entry)
-		return
-	end
-
-	-- ML-AutoReboot reloads a changed file by itself; a reload of ours on top kills the fresh copy mid-start.
-	if script.find('ML-AutoReboot') then
-		updateStatus('Обновлено до {5CC9FF}v' .. entry.version .. '{FFFFFF}, скрипт перезагрузится сам.')
-		return
-	end
-	updateStatus('Обновлено до {5CC9FF}v' .. entry.version .. '{FFFFFF}, перезагружаю скрипт...')
-	reloadPending = true
-end
-
-local function downloadUpdate(entry)
-	-- Called from inside the manifest downloadUrlToFile's own callback - calling downloadUrlToFile again immediately (same tick) throws "device or resource busy", the native
-	-- downloader hasn't released its handle yet. A tick of delay in its own thread fixes it.
-	lua_thread.create(function()
-		wait(250)
-		local tempPath = thisScript().path .. '.tmp'
-		removeIfExists(tempPath)
-		local dl_status = moonloader.download_status
-		local claim = withTimeout(UPDATE_FILE_TIMEOUT, function()
-			removeIfExists(tempPath)
-			updateFailed('timeout', entry)
-		end)
-		-- Only the final status: at STATUS_ENDDOWNLOADDATA the file may not be in place yet.
-		downloadUrlToFile(UPDATE_BASE_URL .. entry.path, tempPath, function(_, status)
-			if status ~= dl_status.STATUSEX_ENDDOWNLOAD or not claim() then return end
-			local content = readFile(tempPath)
-			if not content or content == '' then
-				removeIfExists(tempPath)
-				updateFailed('empty', entry)
-				return
-			end
-			finishUpdate(entry, tempPath)
-		end)
-	end)
-end
-
--- Fetches manifest.json and hands the entry for UPDATE_SCRIPT_ID to onEntry(entry). onError(why) covers everything else (fetch failure, timeout, bad JSON, missing entry) - exactly one fires.
+-- Exactly one of onEntry(entry) / onError() fires.
 local function fetchManifestEntry(onEntry, onError)
 	local manifestPath = thisScript().path .. '.manifest.tmp'
 	removeIfExists(manifestPath)
 	local dl_status = moonloader.download_status
 	local claim = withTimeout(UPDATE_MANIFEST_TIMEOUT, function()
 		removeIfExists(manifestPath)
-		onError('timeout')
+		onError()
 	end)
 
 	-- Only the final status: at STATUS_ENDDOWNLOADDATA the file may not be in place yet, and decodeJson('') is logged as an exception even under pcall.
@@ -1630,55 +1553,59 @@ local function fetchManifestEntry(onEntry, onError)
 		local content = readFile(manifestPath)
 		removeIfExists(manifestPath)
 		if not content or content == '' then
-			onError('empty')
+			onError()
 			return
 		end
 		local ok, data = pcall(decodeJson, content)
-		if not ok or not data or not data.scripts then
-			onError('broken')
+		if not ok or type(data) ~= 'table' or not data.scripts then
+			onError()
 			return
 		end
-
-		local entry
-		for _, s in ipairs(data.scripts) do
-			if s.id == UPDATE_SCRIPT_ID then entry = s break end
+		for _, item in ipairs(data.scripts) do
+			if item.id == UPDATE_SCRIPT_ID then
+				onEntry(item)
+				return
+			end
 		end
-		if not entry then
-			onError('missing')
-			return
-		end
-		onEntry(entry)
+		onError()
 	end)
 end
 
+-- Strictly "remote > local": a newer local build is never offered an older one.
+local function isNewer(entry)
+	local remote, current = versionNum(entry.version), versionNum(thisScript().version)
+	return remote and current and remote > current
+end
+
+local function newVersionText(entry)
+	return 'Вышла {FFB48A}v' .. entry.version .. '{FFFFFF}. Обновить можно через менеджер ArzHub: {FFB48A}' .. MANAGER_URL
+end
+
 local function checkForUpdate()
-	updateStatus('Проверяю обновления...')
+	if managerRunning() then
+		updateStatus('Обновления - через менеджер: {FFB48A}/hub')
+		return
+	end
 	fetchManifestEntry(
 		function(entry)
-			-- Strictly "remote > local", not "remote ~= local" - downgrade is intentionally unsupported (a manifest rollback would otherwise fight a newer local dev build).
-			local remote, current = versionNum(entry.version), versionNum(thisScript().version)
-			if not remote or not current or remote <= current then
-				updateStatus('У вас последняя версия (v' .. thisScript().version .. ').')
-				return
+			if isNewer(entry) then
+				updateStatus(newVersionText(entry))
+			else
+				updateStatus('У вас последняя версия {FFB48A}v' .. thisScript().version .. '{FFFFFF}. ' .. VIA_MANAGER)
 			end
-			updateStatus('Найдено обновление: v' .. entry.version .. '. Скачиваю...')
-			downloadUpdate(entry)
 		end,
-		function(kind)
-			updateFailed(kind)
+		function()
+			updateStatus('Не удалось проверить обновления. ' .. VIA_MANAGER)
 		end
 	)
 end
 
--- Passive check fired once at load: silent when there's nothing to report (up to date, manifest unreachable, whatever) - one line when an update actually exists. Never downloads
--- anything itself, just points at the update command.
+-- Once at load, and only without the manager: silent unless a new version is out.
 local function checkForUpdateSilently()
+	if managerRunning() then return end
 	fetchManifestEntry(
 		function(entry)
-			local remote, current = versionNum(entry.version), versionNum(thisScript().version)
-			if remote and current and remote > current then
-				updateStatus('Доступна новая версия {5CC9FF}v' .. entry.version .. '{FFFFFF}! Обновить: {5CC9FF}/crupdate')
-			end
+			if isNewer(entry) and not managerRunning() then updateStatus(newVersionText(entry)) end
 		end,
 		function() end
 	)
@@ -1689,15 +1616,14 @@ function main()
 	repeat wait(0) until isSampAvailable()
 	wait(1000)
 
-	-- Remnants of an interrupted update (game closed mid-download etc.) - clean before anything else.
-	-- .old is deliberately not touched: it is the previous build, the only way back from an update that turned out broken. One generation at most - atomicReplace overwrites it every time. MoonLoader will not pick it up, the extension is not .lua.
+	-- Leftovers of the old self-updater; .old stays as the way back to the previous build.
 	removeIfExists(thisScript().path .. '.tmp')
 	removeIfExists(thisScript().path .. '.manifest.tmp')
 
 	if hasWindow then
-		sampAddChatMessage(tag .. cyr('Загружен {5CC9FF}v' .. thisScript().version .. '{FFFFFF}. Сбор: {5CC9FF}/crypto{FFFFFF}. История: {5CC9FF}/crstats{FFFFFF}. Настройка: {5CC9FF}/crconfig'), -1)
+		sampAddChatMessage(tag .. cyr('Загружен {FFB48A}v' .. thisScript().version .. '{FFFFFF}. Сбор: {FFB48A}/crypto{FFFFFF}. История: {FFB48A}/crstats{FFFFFF}. Настройка: {FFB48A}/crconfig'), -1)
 	else
-		sampAddChatMessage(tag .. cyr('Загружен {5CC9FF}v' .. thisScript().version .. '{FFFFFF}. Сбор: {5CC9FF}/crypto{FFFFFF}. Статистика: {5CC9FF}/crstats'), -1)
+		sampAddChatMessage(tag .. cyr('Загружен {FFB48A}v' .. thisScript().version .. '{FFFFFF}. Сбор: {FFB48A}/crypto{FFFFFF}. Статистика: {FFB48A}/crstats'), -1)
 		sampAddChatMessage(tag .. cyr('{C0C0C0}Библиотеки {FFFFFF}mimgui{C0C0C0} нет, поэтому окна не будет.'), -1)
 	end
 	sampRegisterChatCommand('crypto', startCryptoCollection)
@@ -1714,11 +1640,6 @@ function main()
 	checkForUpdateSilently()
 	while true do
 		wait(100)
-		if reloadPending then
-			reloadPending = false
-			thisScript():reload()
-			return
-		end
 		-- Anything logged from here on runs on the main tick, not inside a RakNet callback.
 		debugCtx = 'main'
 		-- Handle the dialog delay.
@@ -1762,7 +1683,7 @@ local function buildNotifyParts()
 end
 
 local function printHistoryHint()
-	sampAddChatMessage(tag .. cyr(':bar_chart: {C0C0C0}История всех сборов: {5CC9FF}/crstats'), -1)
+	sampAddChatMessage(tag .. cyr(':bar_chart: {C0C0C0}История всех сборов: {FFB48A}/crstats'), -1)
 end
 
 local function printHouseStats(run)
@@ -1793,7 +1714,7 @@ local function printHouseStats(run)
 		)
 
 		-- Add the cooling info.
-		statusMessage = string.format('%s | {5CC9FF}Охлаждение: :cool: {32CD32}%d :u1f6a8: {FFA500}%d :sos: {FF5555}%d{FFFFFF}',
+		statusMessage = string.format('%s | {FFB48A}Охлаждение: :cool: {32CD32}%d :u1f6a8: {FFA500}%d :sos: {FF5555}%d{FFFFFF}',
 			statusMessage,
 			(totalCards - house.cards.soon - house.cards.urgent),
 			house.cards.soon,
@@ -1825,7 +1746,7 @@ local function printLastRunToChat()
 		end
 	end
 	if not last or type(last.total) ~= 'table' then
-		sampAddChatMessage(tag .. cyr('{C0C0C0}История пуста. Запустите сбор командой {5CC9FF}/crypto'), -1)
+		sampAddChatMessage(tag .. cyr('{C0C0C0}История пуста. Запустите сбор командой {FFB48A}/crypto'), -1)
 		return
 	end
 
@@ -1838,7 +1759,7 @@ local function printLastRunToChat()
 	end
 	local collected = #parts > 0 and table.concat(parts, ' | ') or '{C0C0C0}ничего{FFFFFF}'
 	local interrupted = last.status ~= 'success' and ' {FF5555}Сбор был прерван.{FFFFFF}' or ''
-	sampAddChatMessage(tag .. cyr(string.format(':bar_chart: {5CC9FF}Последний сбор (%s).{FFFFFF}%s Собрано: %s',
+	sampAddChatMessage(tag .. cyr(string.format(':bar_chart: {FFB48A}Последний сбор (%s).{FFFFFF}%s Собрано: %s',
 		formatDuration(last.duration), interrupted, collected)), -1)
 	printHouseStats(last)
 end
@@ -1846,7 +1767,7 @@ end
 --- Help into the chat - the same text as the window tab, only shorter.
 local function printHelpToChat()
 	sampAddChatMessage(tag .. cyr('{FFD700}Crypto Collector{FFFFFF} собирает криптовалюту со всех домов через Флешку майнера.'), -1)
-	sampAddChatMessage(tag .. cyr('{5CC9FF}/crypto{FFFFFF} - запустить сбор, {5CC9FF}/crstats{FFFFFF} - статистика последнего сбора, {5CC9FF}/crupdate{FFFFFF} - проверить обновление.'), -1)
+	sampAddChatMessage(tag .. cyr('{FFB48A}/crypto{FFFFFF} - запустить сбор, {FFB48A}/crstats{FFFFFF} - статистика последнего сбора, {FFB48A}/crupdate{FFFFFF} - проверить обновления.'), -1)
 	sampAddChatMessage(tag .. cyr('{C0C0C0}Пороги охлаждения и счёта, тихий режим и отладка настраиваются в файле:'), -1)
 	sampAddChatMessage(tag .. cyr('{C0C0C0}' .. configDir() .. '\\config.ini'), -1)
 	sampAddChatMessage(tag .. cyr('{C0C0C0}Окно с историей и настройками появится, если положить {FFFFFF}mimgui{C0C0C0} в moonloader/lib.'), -1)
@@ -1903,14 +1824,14 @@ function finishCollection()
     -- Show the notification with a callback that writes into the chat.
     if #notifyParts > 0 then
         notify('success', 'Crypto Collector', cyr('Автосбор завершён за ' .. durationText .. '! Собрано: ' .. table.concat(notifyParts, ', ')) .. enabledNotifySuffix, 4000, function()
-            local summaryMessage = string.format(':tada: {5CC9FF}Автосбор завершён за %s.{FFFFFF} Всего собрано: %s%s. Статистика по домам:', durationText, table.concat(summaryParts, ' | '), enabledSuffix)
+            local summaryMessage = string.format(':tada: {FFB48A}Автосбор завершён за %s.{FFFFFF} Всего собрано: %s%s. Статистика по домам:', durationText, table.concat(summaryParts, ' | '), enabledSuffix)
             sampAddChatMessage(tag .. cyr(summaryMessage), -1)
             printHouseStats(run)
             printHistoryHint()
         end)
     else
         notify('info', 'Crypto Collector', cyr('Автосбор завершён за ' .. durationText .. '. Ничего не собрано.') .. enabledNotifySuffix, 3000, function()
-            sampAddChatMessage(tag .. cyr(':tada: {5CC9FF}Автосбор завершён за ' .. durationText .. '.{FFFFFF} {C0C0C0}Ничего не собрано.{FFFFFF}' .. enabledSuffix .. ' Статистика по домам:'), -1)
+            sampAddChatMessage(tag .. cyr(':tada: {FFB48A}Автосбор завершён за ' .. durationText .. '.{FFFFFF} {C0C0C0}Ничего не собрано.{FFFFFF}' .. enabledSuffix .. ' Статистика по домам:'), -1)
             printHouseStats(run)
             printHistoryHint()
         end)

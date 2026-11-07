@@ -109,8 +109,8 @@
     {
       "id": "crypto-collector",
       "name": "Crypto Collector",
-      "filename": "[TheMY3] Crypto Collector.lua",
-      "version": "2.5.3",
+      "filename": "[ArzHub] Crypto Collector.lua",
+      "version": "2.6.0",
       "path": "scripts/crypto-collector.lua",
       "topic": "https://www.blast.hk/threads/243868/",
       "actual": true,
@@ -144,6 +144,15 @@
           "notes": [
             "Мелкие исправления и доработки."
           ]
+        },
+        {
+          "version": "2.6.0",
+          "date": "2026-11-07",
+          "notes": [
+            "Обновления скрипта теперь через менеджер ArzHub.",
+            "Новый тег в чате: [ArzHub] Crypto Collector.",
+            "Файл скрипта теперь называется [ArzHub] Crypto Collector.lua."
+          ]
         }
       ],
       "description": "Собирает криптовалюту со всех домов одной командой. Показывает состояние карт и баланс домов, хранит историю сборов и умеет пропускать дома из игнор-листа.",
@@ -158,7 +167,9 @@
           "desc": "история, настройки и справка"
         }
       ],
-      "alt_filenames": [],
+      "alt_filenames": [
+        "[TheMY3] Crypto Collector.lua"
+      ],
       "page": "https://arzhub.top/hub/crypto-collector"
     },
     {
