@@ -349,8 +349,8 @@
     {
       "id": "case-opener",
       "name": "Case Opener",
-      "filename": "[TheMY3] Case Opener.lua",
-      "version": "2.1.1",
+      "filename": "[ArzHub] Case Opener.lua",
+      "version": "2.2.0",
       "path": "scripts/case-opener.lua",
       "topic": "https://www.blast.hk/threads/257210/",
       "actual": true,
@@ -443,6 +443,15 @@
             "Общее число кейсов на кнопке «Стоп» больше не прыгает на единицу во время каждого открытия.",
             "Мелкие исправления и доработки."
           ]
+        },
+        {
+          "version": "2.2.0",
+          "date": "2026-11-07",
+          "notes": [
+            "Обновления скрипта теперь через менеджер ArzHub.",
+            "Новый тег в чате: [ArzHub] Case Opener.",
+            "Файл скрипта теперь называется [ArzHub] Case Opener.lua."
+          ]
         }
       ],
       "description": "Автооткрытие кейсов и статистика дропа: пробел вместо мыши, пропуск анимации, режим «Авто» с правилами «Забрать» и «Расколоть».",
@@ -453,7 +462,9 @@
           "desc": "лог дропа и правила"
         }
       ],
-      "alt_filenames": [],
+      "alt_filenames": [
+        "[TheMY3] Case Opener.lua"
+      ],
       "page": "https://arzhub.top/hub/case-opener"
     },
     {
