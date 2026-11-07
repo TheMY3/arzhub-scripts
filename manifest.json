@@ -208,8 +208,8 @@
     {
       "id": "craft-counter",
       "name": "Craft Counter",
-      "filename": "[TheMY3] CraftCounter.lua",
-      "version": "1.3.2",
+      "filename": "[ArzHub] Craft Counter.lua",
+      "version": "1.4.0",
       "path": "scripts/craft-counter.lua",
       "topic": "https://www.blast.hk/threads/246012/",
       "actual": true,
@@ -256,6 +256,15 @@
             "Понятнее сообщения при неудачном обновлении: что случилось и когда повторить.",
             "Надёжнее перезапуск после обновления: больше не перезапускается дважды вместе с ML-AutoReboot."
           ]
+        },
+        {
+          "version": "1.4.0",
+          "date": "2026-11-07",
+          "notes": [
+            "Обновления скрипта теперь через менеджер ArzHub.",
+            "Новый тег в чате: [ArzHub] Craft Counter.",
+            "Файл скрипта теперь называется [ArzHub] Craft Counter.lua."
+          ]
         }
       ],
       "description": "Счётчик крафтов прямо на экране: прогресс, удачные и неудачные попытки, потраченные деньги и оставшееся время. Хранит историю сессий с поиском по предметам.",
@@ -266,7 +275,9 @@
           "desc": "окно истории крафтов"
         }
       ],
-      "alt_filenames": [],
+      "alt_filenames": [
+        "[TheMY3] CraftCounter.lua"
+      ],
       "page": "https://arzhub.top/hub/craft-counter"
     },
     {
