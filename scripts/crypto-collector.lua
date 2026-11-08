@@ -1,6 +1,6 @@
 script_name('Crypto Collector')
 script_author('ArzHub')
-script_version('2.6.0')
+script_version('2.7.0')
 script_url('https://arzhub.top/hub/crypto-collector')
 
 -- Тема на форуме (актуальная версия, обсуждение): https://www.blast.hk/threads/243868/
@@ -481,6 +481,109 @@ local window      -- Window state pointer, alive only together with mimgui.
 local openWindow  -- Open the window on a given tab.
 
 if hasWindow then
+-- The theme block sits unindented: the release check compares it with the shared copy line by line.
+-- arzhub-theme:begin
+-- ArzHub palette (arzhub.top) and the mimgui style built from it; every ArzHub script carries this same block.
+local theme = {}
+do
+    local function rgb(hex, a)
+        return imgui.ImVec4(tonumber(hex:sub(1, 2), 16) / 255, tonumber(hex:sub(3, 4), 16) / 255,
+            tonumber(hex:sub(5, 6), 16) / 255, a or 1)
+    end
+    local function white(a) return imgui.ImVec4(1, 1, 1, a) end
+
+    theme.rgb = rgb
+    theme.bg = rgb('111213')         -- title bar, overlay background.
+    theme.surface = rgb('1e1f22')    -- window background.
+    theme.text = rgb('f2f2f2')
+    theme.text2 = rgb('bdbdbd')      -- secondary text.
+    theme.muted = rgb('9a9a9a')      -- hints and captions.
+    theme.line = white(0.12)         -- borders and separators.
+    theme.accent = rgb('ff6a1a')
+    theme.accentLight = rgb('ffa31a')
+    theme.accentSoft = rgb('ffb48a') -- text on an accent tint.
+    theme.accentTint = rgb('ff6a1a', 0.16)
+    theme.ok = rgb('60ca5d')
+    theme.warn = rgb('d9b45c')
+    theme.bad = rgb('dd6b6f')
+
+    -- Colours and rounding only: spacing and padding belong to each window and are set after this call.
+    function theme.apply()
+        local style = imgui.GetStyle()
+        style.WindowRounding = 8.0
+        style.ChildRounding = 6.0
+        style.PopupRounding = 6.0
+        style.FrameRounding = 5.0
+        style.GrabRounding = 4.0
+        style.ScrollbarRounding = 6.0
+        style.TabRounding = 5.0
+        style.WindowBorderSize = 1.0
+        style.FrameBorderSize = 0.0 -- a border would swallow thin progress bars whole.
+
+        local hover, press = rgb('ff6a1a', 0.22), rgb('ff6a1a', 0.35)
+        local colors = {
+            Text = theme.text, TextDisabled = theme.muted,
+            WindowBg = theme.surface, ChildBg = white(0), PopupBg = theme.surface,
+            Border = theme.line, BorderShadow = white(0),
+            FrameBg = white(0.06), FrameBgHovered = white(0.10), FrameBgActive = white(0.14),
+            TitleBg = theme.bg, TitleBgActive = theme.bg, TitleBgCollapsed = theme.bg, MenuBarBg = theme.bg,
+            ScrollbarBg = white(0), ScrollbarGrab = white(0.16),
+            ScrollbarGrabHovered = rgb('ff6a1a', 0.6), ScrollbarGrabActive = theme.accent,
+            CheckMark = theme.accent, SliderGrab = theme.accent, SliderGrabActive = theme.accentLight,
+            Button = white(0.06), ButtonHovered = hover, ButtonActive = press,
+            Header = white(0.06), HeaderHovered = white(0.09), HeaderActive = theme.accentTint,
+            Separator = theme.line, SeparatorHovered = rgb('ff6a1a', 0.6), SeparatorActive = theme.accent,
+            ResizeGrip = white(0.08), ResizeGripHovered = rgb('ff6a1a', 0.6), ResizeGripActive = theme.accent,
+            Tab = white(0.06), TabHovered = hover, TabActive = theme.accentTint,
+            TabUnfocused = white(0.04), TabUnfocusedActive = white(0.08),
+            PlotLines = theme.accent, PlotLinesHovered = theme.accentLight,
+            PlotHistogram = theme.accent, PlotHistogramHovered = theme.accentLight,
+            TableHeaderBg = theme.bg, TableBorderStrong = theme.line, TableBorderLight = white(0.06),
+            TableRowBg = white(0), TableRowBgAlt = white(0.03),
+            TextSelectedBg = rgb('ff6a1a', 0.35), DragDropTarget = theme.accentLight, NavHighlight = theme.accent,
+            NavWindowingHighlight = white(0.7), NavWindowingDimBg = imgui.ImVec4(0, 0, 0, 0.5),
+            ModalWindowDimBg = imgui.ImVec4(0, 0, 0, 0.5),
+        }
+        for name, col in pairs(colors) do
+            -- A colour this mimgui build does not know is skipped, not fatal.
+            local ok, idx = pcall(function() return imgui.Col[name] end)
+            if ok and idx then style.Colors[idx] = col end
+        end
+    end
+
+    local function button(label, size)
+        if size then return imgui.Button(label, size) end
+        return imgui.Button(label)
+    end
+    -- One at a time: some builds ignore the count, and a leaked push kills imgui a few frames later.
+    local function pop(n)
+        for _ = 1, n do imgui.PopStyleColor(1) end
+    end
+
+    -- The single filled orange button of a window, for its main action.
+    function theme.primaryButton(label, size)
+        imgui.PushStyleColor(imgui.Col.Button, theme.accent)
+        imgui.PushStyleColor(imgui.Col.ButtonHovered, theme.accentLight)
+        imgui.PushStyleColor(imgui.Col.ButtonActive, theme.accent)
+        imgui.PushStyleColor(imgui.Col.Text, theme.bg)
+        local pressed = button(label, size)
+        pop(4)
+        return pressed
+    end
+
+    -- A button with an on state: orange tint and light orange text while on.
+    function theme.toggleButton(label, on, size)
+        if on then
+            imgui.PushStyleColor(imgui.Col.Button, theme.accentTint)
+            imgui.PushStyleColor(imgui.Col.Text, theme.accentSoft)
+        end
+        local pressed = button(label, size)
+        if on then pop(2) end
+        return pressed
+    end
+end
+-- arzhub-theme:end
+
 	-- ============================================================================
 	-- WINDOW (mimgui): history, settings, help
 	-- ============================================================================
@@ -584,37 +687,16 @@ if hasWindow then
 		return glyph .. ' ' .. text
 	end
 
-	local COLOR_GOOD = imgui.ImVec4(0.20, 0.80, 0.20, 1.00)
-	local COLOR_WARN = imgui.ImVec4(1.00, 0.65, 0.00, 1.00)
-	local COLOR_BAD  = imgui.ImVec4(0.85, 0.25, 0.25, 1.00)
-	local COLOR_GOLD = imgui.ImVec4(1.00, 0.70, 0.20, 1.00)
+	local COLOR_GOOD = theme.ok
+	local COLOR_WARN = theme.warn
+	local COLOR_BAD  = theme.bad
+	local COLOR_GOLD = theme.accentLight
 	local COLOR_HOUSE = imgui.ImVec4(0.81, 0.36, 1.00, 1.00)
-	local COLOR_TIME = imgui.ImVec4(0.78, 0.80, 0.86, 1.00)  -- Readable both on the dark background and on the blue highlight.
-	local COLOR_ACTIVE = imgui.ImVec4(0.18, 0.45, 0.75, 1.00)
-	local COLOR_ACTIVE_HOVER = imgui.ImVec4(0.24, 0.55, 0.88, 1.00)
+	local COLOR_TIME = theme.text2  -- Readable both on the dark background and on the orange highlight.
 
 	--- Toggle button: the selected one is highlighted by color instead of changing its text.
 	local function drawToggle(text, active, id, size)
-		if active then
-			imgui.PushStyleColor(imgui.Col.Button, COLOR_ACTIVE)
-			imgui.PushStyleColor(imgui.Col.ButtonHovered, COLOR_ACTIVE_HOVER)
-			imgui.PushStyleColor(imgui.Col.ButtonActive, COLOR_ACTIVE)
-		end
-		-- An if on purpose, not "size and A or B": on a false from the first branch and/or would call Button a second time, and two widgets with the same id break click handling.
-		local label = txt(text) .. '###' .. id
-		local clicked
-		if size then
-			clicked = imgui.Button(label, size)
-		else
-			clicked = imgui.Button(label)
-		end
-		if active then
-			-- One at a time rather than PopStyleColor(3): if the build ignores the count, two pushes leak per frame and a hundred frames later imgui dies on a stack mismatch.
-			imgui.PopStyleColor(1)
-			imgui.PopStyleColor(1)
-			imgui.PopStyleColor(1)
-		end
-		return clicked
+		return theme.toggleButton(txt(text) .. '###' .. id, active, size)
 	end
 
 	--- A value with two steps in each direction. A build may have no real slider, but buttons are everywhere. The value is clamped right away, going out of range is impossible.
@@ -801,42 +883,16 @@ if hasWindow then
 		return os.date('%d.%m.%Y %H:%M', ts)
 	end
 
-	-- The theme is shared with CraftCounter and RouletteHelper.
+	-- Colours and rounding come from the ArzHub theme; the spacing stays this window's own.
 	local function applyTheme()
 		imgui.SwitchContext()
+		theme.apply()
 		local style = imgui.GetStyle()
-
 		style.WindowPadding = imgui.ImVec2(10, 10)
-		style.WindowRounding = 8.0
-		style.ChildRounding = 4.0
 		style.FramePadding = imgui.ImVec2(6, 4)
-		style.FrameRounding = 4.0
 		style.ItemSpacing = imgui.ImVec2(6, 4)
 		style.ScrollbarSize = 12.0
-		style.ScrollbarRounding = 8.0
 		style.WindowTitleAlign = imgui.ImVec2(0.5, 0.5)
-
-		style.Colors[imgui.Col.Text]                 = imgui.ImVec4(0.90, 0.90, 0.93, 1.00)
-		style.Colors[imgui.Col.TextDisabled]         = imgui.ImVec4(0.40, 0.40, 0.45, 1.00)
-		style.Colors[imgui.Col.WindowBg]             = imgui.ImVec4(0.08, 0.08, 0.08, 0.95)
-		style.Colors[imgui.Col.ChildBg]              = imgui.ImVec4(0.12, 0.12, 0.12, 0.50)
-		style.Colors[imgui.Col.Border]               = imgui.ImVec4(0.30, 0.30, 0.30, 1.00)
-		style.Colors[imgui.Col.FrameBg]              = imgui.ImVec4(0.15, 0.15, 0.15, 1.00)
-		style.Colors[imgui.Col.FrameBgHovered]       = imgui.ImVec4(0.25, 0.25, 0.25, 1.00)
-		style.Colors[imgui.Col.FrameBgActive]        = imgui.ImVec4(0.30, 0.30, 0.30, 1.00)
-		style.Colors[imgui.Col.TitleBg]              = imgui.ImVec4(0.10, 0.10, 0.10, 1.00)
-		style.Colors[imgui.Col.TitleBgActive]        = imgui.ImVec4(0.15, 0.15, 0.15, 1.00)
-		style.Colors[imgui.Col.ScrollbarBg]          = imgui.ImVec4(0.10, 0.10, 0.10, 1.00)
-		style.Colors[imgui.Col.ScrollbarGrab]        = imgui.ImVec4(0.30, 0.30, 0.30, 1.00)
-		style.Colors[imgui.Col.ScrollbarGrabHovered] = imgui.ImVec4(0.40, 0.40, 0.40, 1.00)
-		style.Colors[imgui.Col.ScrollbarGrabActive]  = imgui.ImVec4(0.50, 0.50, 0.50, 1.00)
-		style.Colors[imgui.Col.Button]               = imgui.ImVec4(0.20, 0.20, 0.20, 1.00)
-		style.Colors[imgui.Col.ButtonHovered]        = imgui.ImVec4(0.40, 0.40, 0.40, 1.00)
-		style.Colors[imgui.Col.ButtonActive]         = imgui.ImVec4(0.50, 0.50, 0.50, 1.00)
-		style.Colors[imgui.Col.Header]               = imgui.ImVec4(0.20, 0.20, 0.20, 1.00)
-		style.Colors[imgui.Col.HeaderHovered]        = imgui.ImVec4(0.25, 0.25, 0.25, 1.00)
-		style.Colors[imgui.Col.HeaderActive]         = imgui.ImVec4(0.30, 0.30, 0.30, 1.00)
-		style.Colors[imgui.Col.Separator]            = imgui.ImVec4(0.30, 0.30, 0.30, 1.00)
 	end
 
 	imgui.OnInitialize(function()
@@ -1122,7 +1178,7 @@ if hasWindow then
 		imgui.SameLine(rightEdge - buttonWidth)
 		if isEnabled then
 			imgui.TextColored(COLOR_GOOD, txt(label))
-		elseif drawToggle(label, false, 'startrun', imgui.ImVec2(buttonWidth, 0)) then
+		elseif theme.primaryButton(txt(label) .. '###startrun', imgui.ImVec2(buttonWidth, 0)) then
 			-- The window is closed: collection takes minutes, and the player should be watching the game, not this.
 			window[0] = false
 			startCryptoCollection()

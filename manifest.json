@@ -110,7 +110,7 @@
       "id": "crypto-collector",
       "name": "Crypto Collector",
       "filename": "[ArzHub] Crypto Collector.lua",
-      "version": "2.6.0",
+      "version": "2.7.0",
       "path": "scripts/crypto-collector.lua",
       "topic": "https://www.blast.hk/threads/243868/",
       "actual": true,
@@ -152,6 +152,13 @@
             "Обновления скрипта теперь через менеджер ArzHub.",
             "Новый тег в чате: [ArzHub] Crypto Collector.",
             "Файл скрипта теперь называется [ArzHub] Crypto Collector.lua."
+          ]
+        },
+        {
+          "version": "2.7.0",
+          "date": "2026-11-08",
+          "notes": [
+            "Окна в цветах ArzHub."
           ]
         }
       ],
