@@ -1,6 +1,6 @@
 script_name('Craft Counter')
 script_author('ArzHub')
-script_version('1.4.0')
+script_version('1.5.0')
 script_url('https://arzhub.top/hub/craft-counter')
 
 -- Forum topic (current version, discussion): https://www.blast.hk/threads/246012/
@@ -12,6 +12,108 @@ local encoding = require('encoding')
 local hook = require('lib.samp.events')
 encoding.default = 'UTF-8'
 local cyr = encoding.CP1251
+
+-- arzhub-theme:begin
+-- ArzHub palette (arzhub.top) and the mimgui style built from it; every ArzHub script carries this same block.
+local theme = {}
+do
+    local function rgb(hex, a)
+        return imgui.ImVec4(tonumber(hex:sub(1, 2), 16) / 255, tonumber(hex:sub(3, 4), 16) / 255,
+            tonumber(hex:sub(5, 6), 16) / 255, a or 1)
+    end
+    local function white(a) return imgui.ImVec4(1, 1, 1, a) end
+
+    theme.rgb = rgb
+    theme.bg = rgb('111213')         -- title bar, overlay background.
+    theme.surface = rgb('1e1f22')    -- window background.
+    theme.text = rgb('f2f2f2')
+    theme.text2 = rgb('bdbdbd')      -- secondary text.
+    theme.muted = rgb('9a9a9a')      -- hints and captions.
+    theme.line = white(0.12)         -- borders and separators.
+    theme.accent = rgb('ff6a1a')
+    theme.accentLight = rgb('ffa31a')
+    theme.accentSoft = rgb('ffb48a') -- text on an accent tint.
+    theme.accentTint = rgb('ff6a1a', 0.16)
+    theme.ok = rgb('60ca5d')
+    theme.warn = rgb('d9b45c')
+    theme.bad = rgb('dd6b6f')
+
+    -- Colours and rounding only: spacing and padding belong to each window and are set after this call.
+    function theme.apply()
+        local style = imgui.GetStyle()
+        style.WindowRounding = 8.0
+        style.ChildRounding = 6.0
+        style.PopupRounding = 6.0
+        style.FrameRounding = 5.0
+        style.GrabRounding = 4.0
+        style.ScrollbarRounding = 6.0
+        style.TabRounding = 5.0
+        style.WindowBorderSize = 1.0
+        style.FrameBorderSize = 0.0 -- a border would swallow thin progress bars whole.
+
+        local hover, press = rgb('ff6a1a', 0.22), rgb('ff6a1a', 0.35)
+        local colors = {
+            Text = theme.text, TextDisabled = theme.muted,
+            WindowBg = theme.surface, ChildBg = white(0), PopupBg = theme.surface,
+            Border = theme.line, BorderShadow = white(0),
+            FrameBg = white(0.06), FrameBgHovered = white(0.10), FrameBgActive = white(0.14),
+            TitleBg = theme.bg, TitleBgActive = theme.bg, TitleBgCollapsed = theme.bg, MenuBarBg = theme.bg,
+            ScrollbarBg = white(0), ScrollbarGrab = white(0.16),
+            ScrollbarGrabHovered = rgb('ff6a1a', 0.6), ScrollbarGrabActive = theme.accent,
+            CheckMark = theme.accent, SliderGrab = theme.accent, SliderGrabActive = theme.accentLight,
+            Button = white(0.06), ButtonHovered = hover, ButtonActive = press,
+            Header = white(0.06), HeaderHovered = white(0.09), HeaderActive = theme.accentTint,
+            Separator = theme.line, SeparatorHovered = rgb('ff6a1a', 0.6), SeparatorActive = theme.accent,
+            ResizeGrip = white(0.08), ResizeGripHovered = rgb('ff6a1a', 0.6), ResizeGripActive = theme.accent,
+            Tab = white(0.06), TabHovered = hover, TabActive = theme.accentTint,
+            TabUnfocused = white(0.04), TabUnfocusedActive = white(0.08),
+            PlotLines = theme.accent, PlotLinesHovered = theme.accentLight,
+            PlotHistogram = theme.accent, PlotHistogramHovered = theme.accentLight,
+            TableHeaderBg = theme.bg, TableBorderStrong = theme.line, TableBorderLight = white(0.06),
+            TableRowBg = white(0), TableRowBgAlt = white(0.03),
+            TextSelectedBg = rgb('ff6a1a', 0.35), DragDropTarget = theme.accentLight, NavHighlight = theme.accent,
+            NavWindowingHighlight = white(0.7), NavWindowingDimBg = imgui.ImVec4(0, 0, 0, 0.5),
+            ModalWindowDimBg = imgui.ImVec4(0, 0, 0, 0.5),
+        }
+        for name, col in pairs(colors) do
+            -- A colour this mimgui build does not know is skipped, not fatal.
+            local ok, idx = pcall(function() return imgui.Col[name] end)
+            if ok and idx then style.Colors[idx] = col end
+        end
+    end
+
+    local function button(label, size)
+        if size then return imgui.Button(label, size) end
+        return imgui.Button(label)
+    end
+    -- One at a time: some builds ignore the count, and a leaked push kills imgui a few frames later.
+    local function pop(n)
+        for _ = 1, n do imgui.PopStyleColor(1) end
+    end
+
+    -- The single filled orange button of a window, for its main action.
+    function theme.primaryButton(label, size)
+        imgui.PushStyleColor(imgui.Col.Button, theme.accent)
+        imgui.PushStyleColor(imgui.Col.ButtonHovered, theme.accentLight)
+        imgui.PushStyleColor(imgui.Col.ButtonActive, theme.accent)
+        imgui.PushStyleColor(imgui.Col.Text, theme.bg)
+        local pressed = button(label, size)
+        pop(4)
+        return pressed
+    end
+
+    -- A button with an on state: orange tint and light orange text while on.
+    function theme.toggleButton(label, on, size)
+        if on then
+            imgui.PushStyleColor(imgui.Col.Button, theme.accentTint)
+            imgui.PushStyleColor(imgui.Col.Text, theme.accentSoft)
+        end
+        local pressed = button(label, size)
+        if on then pop(2) end
+        return pressed
+    end
+end
+-- arzhub-theme:end
 local u8 = encoding.UTF8
 
 local colors = {
@@ -273,41 +375,16 @@ local function filterHistory(searchText)
 	lastSearch = searchText
 end
 
+-- Colours and rounding come from the ArzHub theme; the spacing stays this window's own.
 local function applyTheme()
 	imgui.SwitchContext()
+	theme.apply()
 	local style = imgui.GetStyle()
-
 	style.WindowPadding = imgui.ImVec2(10, 10)
-	style.WindowRounding = 8.0
-	style.ChildRounding = 4.0
 	style.FramePadding = imgui.ImVec2(6, 4)
-	style.FrameRounding = 4.0
 	style.ItemSpacing = imgui.ImVec2(6, 4)
 	style.ScrollbarSize = 12.0
-	style.ScrollbarRounding = 8.0
 	style.WindowTitleAlign = imgui.ImVec2(0.5, 0.5)
-
-	style.Colors[imgui.Col.Text]                 = imgui.ImVec4(0.90, 0.90, 0.93, 1.00)
-	style.Colors[imgui.Col.TextDisabled]         = imgui.ImVec4(0.40, 0.40, 0.45, 1.00)
-	style.Colors[imgui.Col.WindowBg]             = imgui.ImVec4(0.08, 0.08, 0.08, 0.95)
-	style.Colors[imgui.Col.ChildBg]              = imgui.ImVec4(0.12, 0.12, 0.12, 0.50)
-	style.Colors[imgui.Col.Border]               = imgui.ImVec4(0.30, 0.30, 0.30, 1.00)
-	style.Colors[imgui.Col.FrameBg]              = imgui.ImVec4(0.15, 0.15, 0.15, 1.00)
-	style.Colors[imgui.Col.FrameBgHovered]       = imgui.ImVec4(0.25, 0.25, 0.25, 1.00)
-	style.Colors[imgui.Col.FrameBgActive]        = imgui.ImVec4(0.30, 0.30, 0.30, 1.00)
-	style.Colors[imgui.Col.TitleBg]              = imgui.ImVec4(0.10, 0.10, 0.10, 1.00)
-	style.Colors[imgui.Col.TitleBgActive]        = imgui.ImVec4(0.15, 0.15, 0.15, 1.00)
-	style.Colors[imgui.Col.ScrollbarBg]          = imgui.ImVec4(0.10, 0.10, 0.10, 1.00)
-	style.Colors[imgui.Col.ScrollbarGrab]        = imgui.ImVec4(0.30, 0.30, 0.30, 1.00)
-	style.Colors[imgui.Col.ScrollbarGrabHovered] = imgui.ImVec4(0.40, 0.40, 0.40, 1.00)
-	style.Colors[imgui.Col.ScrollbarGrabActive]  = imgui.ImVec4(0.50, 0.50, 0.50, 1.00)
-	style.Colors[imgui.Col.Button]               = imgui.ImVec4(0.20, 0.20, 0.20, 1.00)
-	style.Colors[imgui.Col.ButtonHovered]        = imgui.ImVec4(0.40, 0.40, 0.40, 1.00)
-	style.Colors[imgui.Col.ButtonActive]         = imgui.ImVec4(0.50, 0.50, 0.50, 1.00)
-	style.Colors[imgui.Col.Header]               = imgui.ImVec4(0.20, 0.20, 0.20, 1.00)
-	style.Colors[imgui.Col.HeaderHovered]        = imgui.ImVec4(0.25, 0.25, 0.25, 1.00)
-	style.Colors[imgui.Col.HeaderActive]         = imgui.ImVec4(0.30, 0.30, 0.30, 1.00)
-	style.Colors[imgui.Col.Separator]            = imgui.ImVec4(0.30, 0.30, 0.30, 1.00)
 end
 
 imgui.OnInitialize(function()
@@ -323,12 +400,12 @@ local function drawRecord(index)
 	local record = historyCache[index]
 	local itemName = record.item or 'Неизвестно'
 
-	imgui.PushStyleColor(imgui.Col.ChildBg, imgui.ImVec4(0.15, 0.15, 0.15, 0.8))
+	imgui.PushStyleColor(imgui.Col.ChildBg, imgui.ImVec4(1, 1, 1, 0.04))
 	imgui.BeginChild('##record' .. index, imgui.ImVec2(-1, CARD_HEIGHT), true, imgui.WindowFlags.NoScrollbar)
 
 	-- Item name and success chance, date on the right.
 	local dateFormatted = formatDateRelative(record.date)
-	imgui.TextColored(imgui.ImVec4(1.0, 0.7, 0.2, 1.0), u8(esc(itemName)))
+	imgui.TextColored(theme.accentLight, u8(esc(itemName)))
 	imgui.SameLine(0, 0)
 	imgui.Text(u8(' (шанс успеха: ' .. esc(record.chance or 0) .. '%%)'))
 	imgui.SameLine(imgui.GetWindowWidth() - imgui.CalcTextSize(dateFormatted).x - 10)
@@ -339,11 +416,11 @@ local function drawRecord(index)
 	local factPct = total > 0 and ((record.success or 0) / total * 100) or 0
 	imgui.Text(u8('Попыток: ' .. total .. ' - '))
 	imgui.SameLine(0, 0)
-	imgui.TextColored(imgui.ImVec4(0.0, 0.8, 0.0, 1.0), u8('Удачно: ' .. tostring(record.success or 0)))
+	imgui.TextColored(theme.ok, u8('Удачно: ' .. tostring(record.success or 0)))
 	imgui.SameLine(0, 0)
 	imgui.Text(u8(' - '))
 	imgui.SameLine(0, 0)
-	imgui.TextColored(imgui.ImVec4(0.8, 0.0, 0.0, 1.0), u8('Неудачно: ' .. tostring(record.fail or 0)))
+	imgui.TextColored(theme.bad, u8('Неудачно: ' .. tostring(record.fail or 0)))
 	imgui.SameLine(0, 0)
 	imgui.Text(u8(' (' .. percentUI(factPct) .. ')'))
 
@@ -395,11 +472,11 @@ imgui.OnFrame(
 
 			imgui.Text(u8('Сессий: ' .. #historyCache .. ' - Попыток: ' .. totalAttempts .. ' - '))
 			imgui.SameLine(0, 0)
-			imgui.TextColored(imgui.ImVec4(0.0, 0.8, 0.0, 1.0), u8('Удачно: ' .. historyTotals.success))
+			imgui.TextColored(theme.ok, u8('Удачно: ' .. historyTotals.success))
 			imgui.SameLine(0, 0)
 			imgui.Text(u8(' - '))
 			imgui.SameLine(0, 0)
-			imgui.TextColored(imgui.ImVec4(0.8, 0.0, 0.0, 1.0), u8('Неудачно: ' .. historyTotals.fail))
+			imgui.TextColored(theme.bad, u8('Неудачно: ' .. historyTotals.fail))
 			imgui.SameLine(0, 0)
 			imgui.Text(u8(' (' .. percentUI(totalPct) .. ') - Потрачено: ' .. formatMoneyFull(historyTotals.spent)))
 

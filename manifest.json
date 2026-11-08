@@ -238,7 +238,7 @@
       "id": "craft-counter",
       "name": "Craft Counter",
       "filename": "[ArzHub] Craft Counter.lua",
-      "version": "1.4.0",
+      "version": "1.5.0",
       "path": "scripts/craft-counter.lua",
       "topic": "https://www.blast.hk/threads/246012/",
       "actual": true,
@@ -293,6 +293,13 @@
             "Обновления скрипта теперь через менеджер ArzHub.",
             "Новый тег в чате: [ArzHub] Craft Counter.",
             "Файл скрипта теперь называется [ArzHub] Craft Counter.lua."
+          ]
+        },
+        {
+          "version": "1.5.0",
+          "date": "2026-11-08",
+          "notes": [
+            "Окна в цветах ArzHub."
           ]
         }
       ],
