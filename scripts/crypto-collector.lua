@@ -1,9 +1,9 @@
 script_name('Crypto Collector')
 script_author('ArzHub')
-script_version('2.7.0')
+script_version('2.7.1')
 script_url('https://arzhub.top/hub/crypto-collector')
 
--- Тема на форуме (актуальная версия, обсуждение): https://www.blast.hk/threads/243868/
+-- Script page (current version, changelog): https://arzhub.top/hub/crypto-collector
 
 local sampev = require("samp.events")
 local inicfg = require('inicfg')
@@ -87,7 +87,7 @@ local TICKER_SHOW_TIME = 7000
 local TICKER_BADGE_COLOR = '#32CD32'  -- The badge shows the collected total.
 
 local tag = '{FFA31A}[ArzHub] Crypto Collector{FFFFFF}: '
-local FORUM_URL = 'https://www.blast.hk/threads/243868/'  -- The link in the help tab.
+local SITE_URL = 'https://arzhub.top/hub/crypto-collector'  -- The link in the help tab.
 
 -- Made one level at a time: config\\ArzHub may not exist yet either.
 local function configDir()
@@ -1374,15 +1374,15 @@ end
 		textNoteWrapped('Не заливает охлаждающую жидкость и не пополняет счёт за электроэнергию - только показывает, где это пора сделать.')
 		imgui.Separator()
 
-		imgui.TextColored(COLOR_GOLD, txt('Тема на форуме'))
-		imgui.TextWrapped(txt('Там актуальная версия и список изменений. Нашли ошибку, чего-то не хватает или есть идея - напишите в тему, это самый быстрый способ до меня достучаться.'))
-		imgui.TextDisabled(txt(FORUM_URL))
-		if imgui.Button(txt('Открыть тему') .. '###openforum') then
-			os.execute('start ' .. FORUM_URL)
+		imgui.TextColored(COLOR_GOLD, txt('Страница на сайте'))
+		imgui.TextWrapped(txt('Там описание, скриншоты и список изменений. Нашли ошибку, чего-то не хватает или есть идея - напишите на arzhub.top/support.'))
+		imgui.TextDisabled(txt(SITE_URL))
+		if imgui.Button(txt('Открыть страницу') .. '###opensite') then
+			os.execute('start ' .. SITE_URL)
 		end
 		imgui.SameLine()
-		if imgui.Button(txt('Скопировать ссылку') .. '###copyforum') then
-			setClipboardText(FORUM_URL)
+		if imgui.Button(txt('Скопировать ссылку') .. '###copysite') then
+			setClipboardText(SITE_URL)
 		end
 		imgui.Separator()
 

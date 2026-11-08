@@ -110,7 +110,7 @@
       "id": "crypto-collector",
       "name": "Crypto Collector",
       "filename": "[ArzHub] Crypto Collector.lua",
-      "version": "2.7.0",
+      "version": "2.7.1",
       "path": "scripts/crypto-collector.lua",
       "topic": "https://www.blast.hk/threads/243868/",
       "actual": true,
@@ -159,6 +159,13 @@
           "date": "2026-11-08",
           "notes": [
             "Окна в цветах ArzHub."
+          ]
+        },
+        {
+          "version": "2.7.1",
+          "date": "2026-11-08",
+          "notes": [
+            "Справка ведёт на страницу скрипта на сайте вместо темы на форуме."
           ]
         }
       ],
