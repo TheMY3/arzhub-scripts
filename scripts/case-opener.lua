@@ -1,6 +1,6 @@
 script_name('Case Opener')
 script_author('ArzHub')
-script_version('2.2.0')
+script_version('2.3.0')
 script_url('https://arzhub.top/hub/case-opener')
 
 -- Forum topic (current version, discussion): https://www.blast.hk/threads/257210/
@@ -18,6 +18,108 @@ local cyr = encoding.CP1251
 local vk_ok, vkeys = pcall(require, 'vkeys')
 
 local new = imgui.new
+
+-- arzhub-theme:begin
+-- ArzHub palette (arzhub.top) and the mimgui style built from it; every ArzHub script carries this same block.
+local theme = {}
+do
+    local function rgb(hex, a)
+        return imgui.ImVec4(tonumber(hex:sub(1, 2), 16) / 255, tonumber(hex:sub(3, 4), 16) / 255,
+            tonumber(hex:sub(5, 6), 16) / 255, a or 1)
+    end
+    local function white(a) return imgui.ImVec4(1, 1, 1, a) end
+
+    theme.rgb = rgb
+    theme.bg = rgb('111213')         -- title bar, overlay background.
+    theme.surface = rgb('1e1f22')    -- window background.
+    theme.text = rgb('f2f2f2')
+    theme.text2 = rgb('bdbdbd')      -- secondary text.
+    theme.muted = rgb('9a9a9a')      -- hints and captions.
+    theme.line = white(0.12)         -- borders and separators.
+    theme.accent = rgb('ff6a1a')
+    theme.accentLight = rgb('ffa31a')
+    theme.accentSoft = rgb('ffb48a') -- text on an accent tint.
+    theme.accentTint = rgb('ff6a1a', 0.16)
+    theme.ok = rgb('60ca5d')
+    theme.warn = rgb('d9b45c')
+    theme.bad = rgb('dd6b6f')
+
+    -- Colours and rounding only: spacing and padding belong to each window and are set after this call.
+    function theme.apply()
+        local style = imgui.GetStyle()
+        style.WindowRounding = 8.0
+        style.ChildRounding = 6.0
+        style.PopupRounding = 6.0
+        style.FrameRounding = 5.0
+        style.GrabRounding = 4.0
+        style.ScrollbarRounding = 6.0
+        style.TabRounding = 5.0
+        style.WindowBorderSize = 1.0
+        style.FrameBorderSize = 0.0 -- a border would swallow thin progress bars whole.
+
+        local hover, press = rgb('ff6a1a', 0.22), rgb('ff6a1a', 0.35)
+        local colors = {
+            Text = theme.text, TextDisabled = theme.muted,
+            WindowBg = theme.surface, ChildBg = white(0), PopupBg = theme.surface,
+            Border = theme.line, BorderShadow = white(0),
+            FrameBg = white(0.06), FrameBgHovered = white(0.10), FrameBgActive = white(0.14),
+            TitleBg = theme.bg, TitleBgActive = theme.bg, TitleBgCollapsed = theme.bg, MenuBarBg = theme.bg,
+            ScrollbarBg = white(0), ScrollbarGrab = white(0.16),
+            ScrollbarGrabHovered = rgb('ff6a1a', 0.6), ScrollbarGrabActive = theme.accent,
+            CheckMark = theme.accent, SliderGrab = theme.accent, SliderGrabActive = theme.accentLight,
+            Button = white(0.06), ButtonHovered = hover, ButtonActive = press,
+            Header = white(0.06), HeaderHovered = white(0.09), HeaderActive = theme.accentTint,
+            Separator = theme.line, SeparatorHovered = rgb('ff6a1a', 0.6), SeparatorActive = theme.accent,
+            ResizeGrip = white(0.08), ResizeGripHovered = rgb('ff6a1a', 0.6), ResizeGripActive = theme.accent,
+            Tab = white(0.06), TabHovered = hover, TabActive = theme.accentTint,
+            TabUnfocused = white(0.04), TabUnfocusedActive = white(0.08),
+            PlotLines = theme.accent, PlotLinesHovered = theme.accentLight,
+            PlotHistogram = theme.accent, PlotHistogramHovered = theme.accentLight,
+            TableHeaderBg = theme.bg, TableBorderStrong = theme.line, TableBorderLight = white(0.06),
+            TableRowBg = white(0), TableRowBgAlt = white(0.03),
+            TextSelectedBg = rgb('ff6a1a', 0.35), DragDropTarget = theme.accentLight, NavHighlight = theme.accent,
+            NavWindowingHighlight = white(0.7), NavWindowingDimBg = imgui.ImVec4(0, 0, 0, 0.5),
+            ModalWindowDimBg = imgui.ImVec4(0, 0, 0, 0.5),
+        }
+        for name, col in pairs(colors) do
+            -- A colour this mimgui build does not know is skipped, not fatal.
+            local ok, idx = pcall(function() return imgui.Col[name] end)
+            if ok and idx then style.Colors[idx] = col end
+        end
+    end
+
+    local function button(label, size)
+        if size then return imgui.Button(label, size) end
+        return imgui.Button(label)
+    end
+    -- One at a time: some builds ignore the count, and a leaked push kills imgui a few frames later.
+    local function pop(n)
+        for _ = 1, n do imgui.PopStyleColor(1) end
+    end
+
+    -- The single filled orange button of a window, for its main action.
+    function theme.primaryButton(label, size)
+        imgui.PushStyleColor(imgui.Col.Button, theme.accent)
+        imgui.PushStyleColor(imgui.Col.ButtonHovered, theme.accentLight)
+        imgui.PushStyleColor(imgui.Col.ButtonActive, theme.accent)
+        imgui.PushStyleColor(imgui.Col.Text, theme.bg)
+        local pressed = button(label, size)
+        pop(4)
+        return pressed
+    end
+
+    -- A button with an on state: orange tint and light orange text while on.
+    function theme.toggleButton(label, on, size)
+        if on then
+            imgui.PushStyleColor(imgui.Col.Button, theme.accentTint)
+            imgui.PushStyleColor(imgui.Col.Text, theme.accentSoft)
+        end
+        local pressed = button(label, size)
+        if on then pop(2) end
+        return pressed
+    end
+end
+-- arzhub-theme:end
 
 -- =========================================================================
 -- Constants
@@ -92,12 +194,12 @@ local DECOR_STEP = 250
 local DIGIT_URL = 'https://cdn.azresources.cloud/projects/arizona-rp/assets/images/inventory/effects/digit_'
 local FLUSH_DELAY = 1.5 -- seconds to wait for trailing informers before writing history.
 
-local COL_TEXT = imgui.ImVec4(1.00, 1.00, 1.00, 1.00)
-local COL_DIM = imgui.ImVec4(0.82, 0.82, 0.86, 1.00)
-local COL_MUTED = imgui.ImVec4(0.66, 0.66, 0.70, 1.00)
+local COL_TEXT = theme.text
+local COL_DIM = theme.text2
+local COL_MUTED = theme.muted
 local COL_SHADOW = imgui.ImVec4(0.00, 0.00, 0.00, 0.95)
 local COL_SHARD = imgui.ImVec4(0.72, 0.45, 1.00, 1.00)
-local COL_OVL_BG = imgui.ImVec4(0.02, 0.02, 0.03, 0.92)
+local COL_OVL_BG = theme.rgb('111213', 0.92)
 
 local RARITY_COL = {
     gold = imgui.ImVec4(1.00, 0.84, 0.00, 1.00),
@@ -1434,7 +1536,7 @@ local function renderAutoPanel(caseKey)
         else
             label = 'Открыть ' .. cases(runTarget[0])
         end
-        if imgui.Button(label .. '##start', imgui.ImVec2(-1, 0)) and left > 0 then startRun() end
+        if theme.primaryButton(label .. '##start', imgui.ImVec2(-1, 0)) and left > 0 then startRun() end
         if imgui.IsItemHovered() then
             imgui.SetTooltip('Призы разбираются по правилам.\n'
                 .. 'Если у выпавшего приза правила нет, решаете вы,\n'
@@ -1488,13 +1590,11 @@ local function renderOverlay()
     local auto = config.settings.auto_mode == 1
     local half = (imgui.GetContentRegionAvail().x - 4) / 2
     local function modeButton(label, on, value)
-        if on then imgui.PushStyleColor(imgui.Col.Button, imgui.ImVec4(0.3, 0.5, 0.3, 1.0)) end
         -- Switching is locked while a run is going.
-        if imgui.Button(label, imgui.ImVec2(half, 0)) and not run and not on then
+        if theme.toggleButton(label, on, imgui.ImVec2(half, 0)) and not run and not on then
             config.settings.auto_mode = value
             saveConfig()
         end
-        if on then imgui.PopStyleColor() end
     end
     modeButton('Вручную', not auto, 0)
     imgui.SameLine(0, 4)
@@ -1822,12 +1922,7 @@ end
 
 local function renderWindow()
     local function pick(label, id, active, width)
-        if active then
-            imgui.PushStyleColor(imgui.Col.Button, imgui.ImVec4(0.3, 0.5, 0.3, 1.0))
-        end
-        local hit = imgui.Button(esc(label) .. '##' .. id, imgui.ImVec2(width or -1, 0))
-        if active then imgui.PopStyleColor() end
-        return hit
+        return theme.toggleButton(esc(label) .. '##' .. id, active, imgui.ImVec2(width or -1, 0))
     end
 
     if pick('Что выпадало', 'tab_log', not rulesMode, 120) then rulesMode = false end
@@ -1903,10 +1998,8 @@ imgui.OnInitialize(function()
 
     imgui.InvalidateFontsTexture()
 
+    theme.apply()
     local style = imgui.GetStyle()
-    style.WindowRounding = 8.0
-    style.ChildRounding = 6.0
-    style.FrameRounding = 5.0
     style.ScrollbarSize = 10.0
     style.ItemSpacing = imgui.ImVec2(8, 4)
     style.WindowPadding = imgui.ImVec2(10, 8)

@@ -385,7 +385,7 @@
       "id": "case-opener",
       "name": "Case Opener",
       "filename": "[ArzHub] Case Opener.lua",
-      "version": "2.2.0",
+      "version": "2.3.0",
       "path": "scripts/case-opener.lua",
       "topic": "https://www.blast.hk/threads/257210/",
       "actual": true,
@@ -486,6 +486,13 @@
             "Обновления скрипта теперь через менеджер ArzHub.",
             "Новый тег в чате: [ArzHub] Case Opener.",
             "Файл скрипта теперь называется [ArzHub] Case Opener.lua."
+          ]
+        },
+        {
+          "version": "2.3.0",
+          "date": "2026-11-08",
+          "notes": [
+            "Окна в цветах ArzHub."
           ]
         }
       ],
