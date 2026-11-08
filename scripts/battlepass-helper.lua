@@ -1,6 +1,6 @@
 script_name('BattlePass Helper')
 script_author('ArzHub')
-script_version('1.4.0')
+script_version('1.5.0')
 script_url('https://arzhub.top/hub/battlepass-helper')
 
 -- Тема на форуме (актуальная версия, обсуждение): https://www.blast.hk/threads/257000/
@@ -233,10 +233,11 @@ local config = inicfg.load({
         pinned = '',
         hidden = '',
         blacklist = '',
+        favorite = '', -- starred quests, pinned in every cycle; kept across cycles like the blacklist.
     },
 }, CFG_PATH)
 
-local pinned, hidden, blacklist = {}, {}, {}
+local pinned, hidden, blacklist, favorite = {}, {}, {}, {}
 
 -- Comma separated id list -> set.
 local function parseIds(str)
@@ -269,6 +270,7 @@ local function saveConfig()
     config.state.pinned = dumpIds(pinned)
     config.state.hidden = dumpIds(hidden)
     config.state.blacklist = dumpIds(blacklist)
+    config.state.favorite = dumpIds(favorite)
     ensureCfgDir()
     inicfg.save(config, CFG_PATH)
 end
@@ -276,6 +278,7 @@ end
 pinned = parseIds(config.state.pinned)
 hidden = parseIds(config.state.hidden)
 blacklist = parseIds(config.state.blacklist)
+favorite = parseIds(config.state.favorite)
 cfgDesc[0] = tonumber(config.settings.overlay_desc) or DESC_PINNED
 cfgFont[0] = math.min(math.max(tonumber(config.settings.overlay_font) or 1, 1), #FONT_PRESETS)
 cfgBg[0] = math.min(math.max(tonumber(config.settings.overlay_bg) or 0, 0), 1)
@@ -431,6 +434,23 @@ local function isDone(q)
     return q.curr >= q.max
 end
 
+-- Pinned for this cycle or starred for good.
+local function isPinned(id)
+    return pinned[id] or favorite[id]
+end
+
+-- A quest carries one mark at a time: 'pin', 'star', 'hide' or 'black'; nil clears it.
+local function setMark(id, mark)
+    pinned[id], favorite[id], hidden[id], blacklist[id] = nil, nil, nil, nil
+    if mark == 'pin' then pinned[id] = true
+    elseif mark == 'star' then favorite[id] = true
+    elseif mark == 'hide' then hidden[id] = true
+    elseif mark == 'black' then blacklist[id] = true
+    end
+    saveConfig()
+    listDirty = true
+end
+
 local function percent(q)
     if q.max <= 0 then return 0 end
     return math.min(q.curr / q.max, 1.0)
@@ -450,18 +470,41 @@ local function sortGroup(list)
     return started
 end
 
+-- Every id of a lasting mark, including quests outside the current set: those can still be seen and cleared. Current ones first, then by title.
+local function markedList(set)
+    local current = {}
+    for _, q in ipairs(quests) do current[q.id] = q end
+
+    local list = {}
+    for id in pairs(set) do
+        local entry = current[id] or catalog[id]
+        list[#list + 1] = {
+            id = id,
+            title = entry and entry.title or ('Задание #' .. id),
+            description = entry and entry.description,
+            absent = not current[id],
+        }
+    end
+    table.sort(list, function(a, b)
+        if a.absent ~= b.absent then return not a.absent end
+        if a.title ~= b.title then return a.title < b.title end
+        return a.id < b.id
+    end)
+    return list
+end
+
 local function rebuildList()
     local pin, active, done = {}, {}, {}
-    local hid, black = {}, {}
+    local hid = {}
 
     for _, q in ipairs(quests) do
         if blacklist[q.id] then
-            black[#black + 1] = q
+            -- Listed from the id set below, together with the ones outside this set.
         elseif isDone(q) then
             done[#done + 1] = q
         elseif hidden[q.id] then
             hid[#hid + 1] = q
-        elseif pinned[q.id] then
+        elseif isPinned(q.id) then
             pin[#pin + 1] = q
         else
             active[#active + 1] = q
@@ -469,7 +512,7 @@ local function rebuildList()
     end
 
     sorted = { pin = sortGroup(pin), active = sortGroup(active), done = done,
-        hidden = hid, black = black }
+        hidden = hid, black = markedList(blacklist), fav = markedList(favorite) }
 
     -- Blacklisted and hidden quests drop out of the counter entirely.
     local total, complete = 0, 0
@@ -483,7 +526,7 @@ local function rebuildList()
     listDirty = false
 end
 
--- Wipes pins and hides when the quest cycle has rolled over.
+-- Wipes pins and hides when the quest cycle has rolled over; stars and the blacklist stay.
 local function syncCycle()
     if bp.resetAt <= 0 then return end
     if tonumber(config.state.cycle) ~= bp.resetAt then
@@ -531,6 +574,7 @@ local function completeByTitle(title)
     end
     if not best then return false end
     best.curr = best.max
+    -- The pin was for this cycle only; a star stays for the next one.
     pinned[best.id] = nil
     listDirty = true
     return true
@@ -616,7 +660,7 @@ local function renderOverlayRow(q, col)
     rightAligned(progressText(q), col, true)
 
     local wantDesc = (cfgDesc[0] == DESC_ALL)
-        or (cfgDesc[0] == DESC_PINNED and pinned[q.id])
+        or (cfgDesc[0] == DESC_PINNED and isPinned(q.id))
     if wantDesc and q.description then
         pushSmall()
         shadowText(q.description, COL_DIM, imgui.GetWindowContentRegionMax().x)
@@ -678,14 +722,46 @@ end
 -- Window rendering
 -- =========================================================================
 
-local BTN_ZONE = 84 -- room reserved on the right for the three row buttons.
+-- Row buttons left to right: icon name and the letter shown without fAwesome6.
+local ROW_ICONS = { { 'thumbtack', 'P' }, { 'star', 'S' }, { 'eye-slash', 'H' }, { 'ban', 'X' } }
+local BTN_GAP = 6 -- between the progress numbers and the first button.
+local BTN_SPACING = 4 -- between the row buttons, tighter than ItemSpacing.
+local BTN_PAD_Y = 2 -- vertical padding; the button is raised by as much to stay centred on the title.
+local btnShift = 0 -- how far the last row's buttons overshot the right edge, applied from the next frame.
+
+-- First guess at the width of the four row buttons; rounding inside imgui is caught by btnShift.
+local function rowButtonsWidth()
+    local style = imgui.GetStyle()
+    local w = BTN_SPACING * (#ROW_ICONS - 1)
+    for _, ic in ipairs(ROW_ICONS) do
+        w = w + imgui.CalcTextSize(icon(ic[1], ic[2])).x + style.FramePadding.x * 2
+    end
+    return w
+end
+
+-- Row buttons are a little taller than the text and light up through the theme while on.
+local function rowButton(label, on)
+    local pad = imgui.GetStyle().FramePadding
+    imgui.PushStyleVarVec2(imgui.StyleVar.FramePadding, imgui.ImVec2(pad.x, BTN_PAD_Y))
+    local pressed = theme.toggleButton(label, on)
+    imgui.PopStyleVar(1)
+    return pressed
+end
+
+-- Empty space the size of a row button.
+local function rowButtonSlot(label)
+    local pad = imgui.GetStyle().FramePadding
+    local size = imgui.CalcTextSize((label:gsub('##.*$', '')))
+    imgui.Dummy(imgui.ImVec2(size.x + pad.x * 2, size.y + BTN_PAD_Y * 2))
+end
 
 local function renderWindowRow(q, col)
     imgui.PushIDInt(q.id)
     local startPos = imgui.GetCursorPos()
 
     imgui.TextColored(col, q.title)
-    rightAligned(progressText(q), col, false, BTN_ZONE)
+    local zone = rowButtonsWidth() + btnShift
+    rightAligned(progressText(q), col, false, zone + BTN_GAP)
 
     -- Full width: the buttons sit on the title row only, the space under them is free.
     if q.description then
@@ -705,48 +781,62 @@ local function renderWindowRow(q, col)
     -- Buttons are placed absolutely at the row top, so a wrapped description does not drag them down.
     local endPos = imgui.GetCursorPos()
     imgui.SetCursorPos(imgui.ImVec2(
-        imgui.GetWindowContentRegionMax().x - BTN_ZONE + 6, startPos.y))
+        imgui.GetWindowContentRegionMax().x - zone, startPos.y - BTN_PAD_Y))
 
-    if imgui.SmallButton(icon('thumbtack', 'P') .. '##pin') then
-        pinned[q.id] = not pinned[q.id] or nil
-        saveConfig()
-        listDirty = true
+    local pinLabel = icon('thumbtack', 'P') .. '##pin'
+    if favorite[q.id] then
+        -- The star already pins it: the pin is left out, but its slot stays so the other buttons do not shift.
+        rowButtonSlot(pinLabel)
+    else
+        if rowButton(pinLabel, pinned[q.id]) then setMark(q.id, not pinned[q.id] and 'pin' or nil) end
+        if imgui.IsItemHovered() then
+            imgui.SetTooltip(pinned[q.id] and 'Открепить' or 'Закрепить до сброса заданий')
+        end
     end
-    if imgui.IsItemHovered() then imgui.SetTooltip('Закрепить наверх') end
 
-    imgui.SameLine()
-    if imgui.SmallButton(icon('eye-slash', 'H') .. '##hide') then
-        hidden[q.id] = not hidden[q.id] or nil
-        saveConfig()
-        listDirty = true
+    imgui.SameLine(0, BTN_SPACING)
+    if rowButton(icon('star', 'S') .. '##star', favorite[q.id]) then
+        setMark(q.id, not favorite[q.id] and 'star' or nil)
     end
+    if imgui.IsItemHovered() then
+        imgui.SetTooltip(favorite[q.id] and 'Убрать из избранного' or 'В избранное: автозакрепление после каждого сброса заданий')
+    end
+
+    imgui.SameLine(0, BTN_SPACING)
+    if rowButton(icon('eye-slash', 'H') .. '##hide', false) then setMark(q.id, 'hide') end
     if imgui.IsItemHovered() then imgui.SetTooltip('Скрыть до сброса заданий') end
 
-    imgui.SameLine()
-    -- "ban", not a trash can: the quest is not deleted, it stops being shown.
-    if imgui.SmallButton(icon('ban', 'X') .. '##bl') then
-        blacklist[q.id] = true
-        pinned[q.id] = nil
-        saveConfig()
-        listDirty = true
-    end
+    imgui.SameLine(0, BTN_SPACING)
+    -- "ban", not a trash can: the quest is not deleted, it stops being shown. Red on hover: this one is for good.
+    imgui.PushStyleColor(imgui.Col.ButtonHovered, theme.rgb('dd6b6f', 0.35))
+    imgui.PushStyleColor(imgui.Col.ButtonActive, theme.rgb('dd6b6f', 0.55))
+    local banned = rowButton(icon('ban', 'X') .. '##bl', false)
+    imgui.PopStyleColor(1)
+    imgui.PopStyleColor(1)
+    if banned then setMark(q.id, 'black') end
     if imgui.IsItemHovered() then imgui.SetTooltip('В чёрный список навсегда') end
+
+    -- Where the last button really ended against the right edge; the next frame moves the group by the difference.
+    local over = imgui.GetItemRectMax().x - (imgui.GetWindowPos().x + imgui.GetWindowContentRegionMax().x)
+    if math.abs(over) >= 0.5 then btnShift = math.min(math.max(btnShift + over, -20), 20) end
 
     imgui.SetCursorPos(endPos)
     imgui.Separator()
     imgui.PopID()
 end
 
--- Title, description and a restore button; used by both buried sections.
-local function renderBuriedRow(q)
+-- Title, description and a button that clears the mark; used by every collapsible section of marked quests.
+local function renderBuriedRow(q, button)
     imgui.PushIDInt(q.id)
     imgui.TextColored(COL_DIM, q.title)
-    imgui.SameLine(imgui.GetWindowContentRegionMax().x - 62)
-    if imgui.SmallButton('Вернуть##restore') then
-        hidden[q.id] = nil
-        blacklist[q.id] = nil
-        saveConfig()
-        listDirty = true
+    local label = button .. '##restore'
+    local w = imgui.CalcTextSize(button).x + imgui.GetStyle().FramePadding.x * 2
+    imgui.SameLine(imgui.GetWindowContentRegionMax().x - w)
+    if imgui.SmallButton(label) then setMark(q.id, nil) end
+    if q.absent then
+        pushSmall()
+        imgui.TextColored(COL_MUTED, 'нет в текущем наборе')
+        popSmall()
     end
     if q.description then
         pushSmall()
@@ -759,7 +849,7 @@ local function renderBuriedRow(q)
 end
 
 -- Collapsible section with an explanation of what "buried" means here.
-local function renderBuriedSection(title, note, list)
+local function renderBuriedSection(title, note, list, button)
     if #list == 0 then return end
     -- The count is in the label but not in the id: otherwise the section would collapse itself every time the number changes.
     if not imgui.CollapsingHeader(title .. ': ' .. #list .. '##sect_' .. title) then return end
@@ -772,7 +862,7 @@ local function renderBuriedSection(title, note, list)
 
     imgui.Separator()
     for _, q in ipairs(list) do
-        renderBuriedRow(q)
+        renderBuriedRow(q, button or 'Вернуть')
         imgui.Separator()
     end
     imgui.Spacing()
@@ -845,13 +935,15 @@ local function renderWindow()
     imgui.Separator()
 
     imgui.BeginChild('##list', imgui.ImVec2(0, -LIST_BOTTOM), false)
+    -- Room for the row buttons, raised above the first title.
+    imgui.SetCursorPosY(imgui.GetCursorPosY() + BTN_PAD_Y)
 
     if catalogLoading then
         imgui.TextColored(COL_DIM, 'Качаю каталог...')
     elseif catalogCount == 0 then
         imgui.TextWrapped('Каталог заданий не загружен' ..
             (catalogError and (': ' .. catalogError) or '') ..
-            '. Скачать заново: /bpload')
+            '. Нажми обновление: каталог скачается заново.')
     elseif isStale() then
         imgui.TextColored(COL_ALERT, 'Задания сброшены, нужно обновить')
     elseif #quests == 0 then
@@ -874,12 +966,16 @@ local function renderWindow()
                 end
             end
         end
+        renderBuriedSection('Избранное',
+            'Эти задания закрепляются автоматически после каждого сброса заданий.',
+            sorted.fav, 'Убрать')
+
         renderBuriedSection('Скрытые задания',
-            'Скрываются только до обновления заданий: когда набор сменится, они вернутся в общий список сами.',
+            'Эти задания скрываются до следующего сброса заданий.',
             sorted.hidden)
 
         renderBuriedSection('Чёрный список',
-            'Эти задания не показываются в списке активных никогда, в том числе после обновления заданий.',
+            'Эти задания скрываются автоматически после каждого сброса заданий.',
             sorted.black)
     end
 
@@ -1306,8 +1402,7 @@ function main()
 
     chat('Загружен {FFB48A}v' .. thisScript().version .. '{FFFFFF}. Список: {FFB48A}/bp'
         .. '{FFFFFF}. Режим: {FFB48A}' .. keyLabel(config.settings.toggle_key)
-        .. '{FFFFFF}. Обновить: {FFB48A}' .. keyLabel(config.settings.refresh_key)
-        .. '{FFFFFF}. Каталог: {FFB48A}/bpload')
+        .. '{FFFFFF}. Обновить: {FFB48A}' .. keyLabel(config.settings.refresh_key))
 
     -- Catalog first: without it a snapshot has nothing to join against.
     if not loadCatalogFromDisk() then
@@ -1331,12 +1426,6 @@ function main()
         -- Refresh unless the snapshot is fresh enough to be worth showing.
         local age = snapshotAt and (os.time() - snapshotAt) or math.huge
         if age > SNAPSHOT_FRESH or isStale() then requestRefresh(false) end
-    end)
-
-    -- Kept as a command rather than a button: needed roughly once a season, when the quest pool changes and ids stop resolving.
-    sampRegisterChatCommand('bpload', function()
-        chat('Качаю каталог заданий...')
-        downloadCatalog()
     end)
 
     sampRegisterChatCommand('bpupdate', checkForUpdate)
