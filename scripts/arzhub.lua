@@ -1,6 +1,6 @@
 script_name('ArzHub')
 script_author('ArzHub')
-script_version('1.0.2')
+script_version('1.0.3')
 script_url('https://arzhub.top/hub')
 
 -- In-game manager for the ArzHub scripts: what is installed, what is out, install, update and remove in one click.
@@ -30,6 +30,8 @@ local URL = {
     support = 'https://arzhub.top/support',
     event = 'https://arzhub.top/api/hub/event',
     socketLib = 'https://arzhub.top/hub/lib/luasocket.zip',
+    -- The window page as an archive for moonloader\config\ArzHub\hub, built by every deploy of the manager.
+    windowZip = 'https://arzhub.top/hub/hub/window.zip',
 }
 
 local PORT_FIRST, PORT_LAST = 38260, 38270 -- Local HTTP channel from the page, first free port wins.
@@ -75,6 +77,9 @@ local TEXT = {
     okUpdate = 'Обновлено до %s, скрипт перезапущен.',
     okKeepNew = 'Старая копия удалена.',
     failKeep = ' Старая версия на месте.',
+    -- A download that keeps failing will not pass in a couple of minutes either: point at the manual way.
+    manualScript = ' Повторите позже или скачайте файл вручную - ссылка внизу.',
+    manualManager = ' Повторите позже или скачайте менеджер вручную на arzhub.top/hub',
     loadFail = 'Скрипт скачан, но не запустился. Перезапустите скрипты (Ctrl+R) или напишите: ' .. URL.support,
 }
 
@@ -775,34 +780,74 @@ html,body{margin:0;height:100%;background:transparent;font:14px/1.45 "Segoe UI",
 .bar{padding:12px 14px;background:rgba(217,180,92,.10);color:#d9b45c}
 .body{padding:16px 14px}
 .hint{margin:0 0 14px;color:#b5b5b5}
-button{height:34px;padding:0 14px;border-radius:6px;border:0;font-weight:600;color:#111213;background:linear-gradient(180deg,#ffa31a,#ff6a1a);cursor:pointer}
+button{height:34px;padding:0 14px;border-radius:6px;border:0;font:600 14px/1 "Segoe UI",Arial,sans-serif;color:#111213;background:linear-gradient(180deg,#ffa31a,#ff6a1a);cursor:pointer}
+button.sec{background:rgba(255,255,255,.08);color:#f2f2f2}
+button:disabled{opacity:.6;cursor:default}
+.row{display:flex;align-items:center;gap:10px}
+.lnk{margin-left:4px;color:#bdbdbd;text-decoration:underline;cursor:pointer}
+.lnk:hover{color:#f2f2f2}
+.st{margin:12px 0 0;color:#dd6b6f}
+.st:empty{display:none}
+.note{margin:12px 0 0;color:#9a9a9a;font-size:13px}
 </style></head><body><div class="win">
 <div class="head"><div class="logo">ARZ<b>HUB</b></div><span class="x" data-act="close">&times;</span></div>
 <div class="bar">{{BAR}}</div>
-<div class="body"><p class="hint">{{HINT}}</p><button data-act="retry">Повторить</button></div>
+<div class="body"><p class="hint">{{HINT}}</p>
+<div class="row"><button id="retry" data-act="retry">Повторить</button>{{ARCHIVE}}<span class="lnk" data-act="support">Поддержка</span></div>
+<p class="st" id="st"></p>{{NOTE}}</div>
 </div><script>
 const toLua = (kind, data) => parent.postMessage({ arzhub: true, kind: kind, data: data == null ? '' : String(data) }, '*');
+const retry = document.getElementById('retry');
+const st = document.getElementById('st');
 document.addEventListener('click', (e) => {
   const a = e.target.closest('[data-act]');
   if (!a) return;
-  if (a.dataset.act === 'close') toLua('close', 'button'); else toLua('retry', '');
+  const act = a.dataset.act;
+  if (act === 'close') { toLua('close', 'button'); return; }
+  if (act === 'retry') {
+    if (retry.disabled) return;
+    retry.disabled = true;
+    retry.textContent = '\u041f\u0440\u043e\u0431\u0443\u044e \u0435\u0449\u0451 \u0440\u0430\u0437...'; // decoded: Пробую ещё раз...
+    st.textContent = '';
+  }
+  toLua(act, '');
+});
+// A retry that failed again: the button comes back with the reason under it; a success replaces the whole page.
+addEventListener('message', (e) => {
+  const d = e.data;
+  if (!d || d.arzhubIn !== true || d.kind !== 'retryFail') return;
+  retry.disabled = false;
+  retry.textContent = '\u041f\u043e\u0432\u0442\u043e\u0440\u0438\u0442\u044c'; // decoded: Повторить
+  st.textContent = String(d.data);
 });
 toLua('stat', '');
 setInterval(() => toLua('stat', ''), 1000);
 </script></body></html>
 ]==]
 
--- 'list': no list at all; 'page': the list is here, the window page did not download.
+-- 'list': no list at all; 'page': the list is here, the window page did not download - the archive gets around that.
 local FALLBACK_TEXT = {
     list = {
         bar = 'Нет связи со списком скриптов',
         hint = 'Проверьте интернет и нажмите «Повторить».',
+        archive = '', note = '',
     },
     page = {
-        bar = 'Не удалось загрузить окно менеджера',
-        hint = 'Список скриптов получен, но само окно не скачалось. Нажмите «Повторить», а если не поможет - перезапустите игру и откройте /hub снова.',
+        bar = 'Не удалось скачать окно менеджера',
+        hint = 'Список скриптов загрузился, а файл окна нет. Так бывает, когда провайдер или антивирус мешают загрузке.',
+        archive = '<button class="sec" data-act="archive">Скачать архив</button>',
+        note = '<p class="note">Архив распакуйте в папку с игрой, туда, где лежит moonloader, и откройте /hub снова.</p>',
     },
 }
+
+local RETRY_REASON = {
+    timeout = 'сервер не ответил', empty = 'файл не скачался', busy = 'загрузка не началась',
+    broken = 'ответ сервера с ошибкой', bad = 'файл скачался с ошибкой',
+}
+
+local function retryFailText(err)
+    return ('Попытка в %s не удалась: %s.'):format(os.date('%H:%M:%S'), RETRY_REASON[err] or err)
+end
 
 local function fallbackPage(kind)
     local t = FALLBACK_TEXT[kind]
@@ -876,6 +921,7 @@ local manifestFetching = false
 local pageFetching = false
 local pageWaiters = {}
 local pageFailed = nil     -- ui.version whose download failed this session: opening does not wait for it again.
+local pageErr = nil        -- Why it failed: the fallback page shows it after a retry.
 local busy, results = {}, {}
 local bulk = nil           -- Update-all in progress: { i, n }.
 
@@ -992,7 +1038,7 @@ local function withPage(cb)
             writeFile(PAGE_VERSION_PATH, want)
             outHtml, key = body, 'ui:' .. want
         else
-            pageFailed = want
+            pageFailed, pageErr = want, err or 'bad'
             logLine('страница окна не скачалась: ' .. tostring(err or 'не та страница'))
             writeFile(PAGE_FAIL_PATH, err or 'bad')
             if html then outHtml, key = html, 'ui:' .. tostring(ver) end
@@ -1114,13 +1160,20 @@ end
 -- ============================================================================
 
 local FAIL_TEXT = {
-    timeout = 'Сервер не ответил, повторите через пару минут.',
-    empty = 'Файл не скачался, повторите через пару минут.',
-    broken = 'Файл скачался с ошибкой, повторите через пару минут.',
+    timeout = 'Сервер не ответил.',
+    empty = 'Файл не скачался.',
+    broken = 'Файл скачался с ошибкой.',
     stale = 'Новая версия ещё не успела разойтись, повторите через пару минут.',
     replace = 'Не удалось записать файл: он занят другой программой или нет прав.',
-    busy = 'Загрузка не началась, повторите через пару минут.',
+    busy = 'Загрузка не началась.',
 }
+-- Failures the manual download gets around; a stale CDN passes by itself, a locked file stays locked.
+local FAIL_MANUAL = { timeout = true, empty = true, broken = true, busy = true }
+
+-- keep: the failKeep line for an update, '' for a first install; manual: the manualScript or manualManager line.
+local function failText(err, keep, manual)
+    return FAIL_TEXT[err] .. keep .. (FAIL_MANUAL[err] and manual or '')
+end
 local SITE_PATTERN = '^https://arzhub%.top/[%w%-%._~/]*$'
 
 local reloadPending = false
@@ -1200,13 +1253,13 @@ local function installEntry(e, done)
     queueFile(e.path, tmp, function(err)
         if err then
             removeIfExists(tmp)
-            finish(false, FAIL_TEXT[err] .. keep, err)
+            finish(false, failText(err, keep, TEXT.manualScript), err)
             return
         end
         local bad = checkBuild(tmp, e.version, scan.localVersion)
         if bad then
             removeIfExists(tmp)
-            finish(false, FAIL_TEXT[bad] .. keep, bad)
+            finish(false, failText(bad, keep, TEXT.manualScript), bad)
             return
         end
         if scan.path == target then
@@ -1311,13 +1364,13 @@ local function selfUpdate(announce)
     queueFile(m.path, tmp, function(err)
         if err then
             removeIfExists(tmp)
-            finish(false, FAIL_TEXT[err] .. TEXT.failKeep, err)
+            finish(false, failText(err, TEXT.failKeep, TEXT.manualManager), err)
             return
         end
         local bad = checkBuild(tmp, m.version, own)
         if bad or not atomicReplace(tmp, target) then
             removeIfExists(tmp)
-            finish(false, FAIL_TEXT[bad or 'replace'] .. TEXT.failKeep, bad or 'replace')
+            finish(false, failText(bad or 'replace', TEXT.failKeep, TEXT.manualManager), bad or 'replace')
             return
         end
         selfReplaced, dlFrozen = true, true
@@ -1352,14 +1405,14 @@ end
 
 local ACTIONS = {
     install = true, update = true, delete = true, keepNew = true, open = true, run = true,
-    updateAll = true, selfUpdate = true, releases = true, support = true,
+    updateAll = true, selfUpdate = true, releases = true, support = true, archive = true,
 }
 
 -- Page actions need a fresh list and never overlap: a busy entry or a running update-all ignores them.
 local function onAction(kind, data)
     -- The site and support links are for exactly the cases where the rest fails, so they need no list.
-    if kind == 'releases' or kind == 'support' then
-        os.execute('start ' .. (kind == 'support' and URL.support or URL.releases))
+    if kind == 'releases' or kind == 'support' or kind == 'archive' then
+        os.execute('start ' .. (kind == 'support' and URL.support or kind == 'archive' and URL.windowZip or URL.releases))
         return
     end
     if not catalog or catalog.offline or bulk or selfReplaced or busy[UPDATE_SCRIPT_ID] then return end
@@ -1414,11 +1467,15 @@ onCatalog = function(err, login)
             chat(TEXT.updateNone:format(thisScript().version))
         end
     end
-    -- The fallback page has nothing to show once the list is back: the real one replaces it.
-    if not err and isOpen and openPageKey and openPageKey:find('^fallback') and catalog.ui then
-        closeWindow('пришёл список, открываю настоящую страницу')
-        wantOpen = true
-        return
+    -- The no-list page has nothing to show once the list is back: the real one replaces it.
+    if isOpen and openPageKey == 'fallback:list' then
+        if err or not catalog.ui then
+            post('retryFail', retryFailText(err or 'broken'))
+        else
+            closeWindow('пришёл список, открываю настоящую страницу')
+            wantOpen = true
+            return
+        end
     end
     pushState()
 end
@@ -1439,7 +1496,20 @@ local function onPageMessage(kind, data)
         if data ~= '' and isOpen and cursorOn then cefCursor(true, 'открылось окно Arizona ' .. data) end
     elseif kind == 'retry' then
         pageFailed = nil
-        refreshCatalog(false)
+        if openPageKey == 'fallback:page' and catalog then
+            -- Only the page is missing: fetch it again, the window stays open until it is here.
+            withPage(function(_, key)
+                if not isOpen or openPageKey ~= 'fallback:page' then return end
+                if key:find('^ui:') then
+                    closeWindow('страница окна скачалась, открываю её')
+                    wantOpen = true
+                else
+                    post('retryFail', retryFailText(pageErr or 'bad'))
+                end
+            end)
+        else
+            refreshCatalog(false)
+        end
     elseif kind == 'cursor' then
         restores = restores + 1
         if os.clock() - restoreLoggedAt >= RESTORE_LOG_EVERY then
