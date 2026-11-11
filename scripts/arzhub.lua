@@ -1,6 +1,6 @@
 script_name('ArzHub')
 script_author('ArzHub')
-script_version('1.0.1')
+script_version('1.0.2')
 script_url('https://arzhub.top/hub')
 
 -- In-game manager for the ArzHub scripts: what is installed, what is out, install, update and remove in one click.
@@ -20,8 +20,10 @@ pcall(ffi.cdef, [[
 -- The site's orange: the tag in its light end, highlights (versions, commands) in the peach of the window's command chips.
 local TAG = '{FFA31A}[ArzHub]{FFFFFF}: '
 local UPDATE_SCRIPT_ID = 'arzhub'
--- Everything comes from the site: it proxies the arzhub-scripts repository and sees every start and download.
+-- The list and stats go to the site; files come from GitHub, the site's proxy of the same repository is the fallback.
+-- Some providers stall connections to Cloudflare after ~16 KB: the small list passes, a page or a script hangs.
 local URL = {
+    files = 'https://raw.githubusercontent.com/TheMY3/arzhub-scripts/main/',
     base = 'https://arzhub.top/hub/',
     manifest = 'https://arzhub.top/hub/manifest.json',
     releases = 'https://arzhub.top/hub',
@@ -209,6 +211,7 @@ local evQueue = {}         -- Stats requests: they take the slot only when no sc
 local installId = nil
 local dlActive = nil
 local dlFreeAt = 0
+local githubDown = false   -- GitHub failed a file this session: the rest come through the site.
 local dlFrozen = false     -- Own file replaced: a reload is coming, a download started now would call back into an unloaded script.
 
 -- onDone(err) runs from main(): err is nil, 'timeout', 'empty' or 'busy'; on success the file stays at dest.
@@ -216,18 +219,30 @@ local function queueDownload(url, dest, onDone)
     dlQueue[#dlQueue + 1] = { url = url, dest = dest, onDone = onDone }
 end
 
+-- A file of the arzhub-scripts repository by its path there; where it comes from is picked when it starts.
+local function queueFile(path, dest, onDone)
+    dlQueue[#dlQueue + 1] = { path = path, dest = dest, onDone = onDone }
+end
+
+local queueEvent  -- Defined with the stats below; a GitHub failure reports through it.
+
 local function stepDownloads()
     local j = dlActive
     if j then
         if not j.done and os.clock() - j.t0 < (j.timeout or DL_TIMEOUT) then return end
         dlActive = nil
         dlFreeAt = os.clock() + DL_GAP
-        if not j.done then
-            removeIfExists(j.dest)
-            j.onDone('timeout')
-        elseif fileSize(j.dest) == 0 then
-            removeIfExists(j.dest)
-            j.onDone('empty')
+        local err = not j.done and 'timeout' or (fileSize(j.dest) == 0 and 'empty') or nil
+        if err then removeIfExists(j.dest) end
+        if err and j.github then
+            -- Blocked or stalled GitHub: this file and the rest of the session go through the site.
+            githubDown = true
+            logLine('GitHub не отдал файл (' .. err .. '), дальше качаю через arzhub.top')
+            queueEvent('fallback', { why = err })
+            j.github = nil
+            table.insert(dlQueue, 1, j)
+        elseif err then
+            j.onDone(err)
         else
             j.onDone(nil)
         end
@@ -238,13 +253,19 @@ local function stepDownloads()
     if not j then return end
     removeIfExists(j.dest)
     j.t0 = os.clock()
+    j.done = nil
     dlActive = j
-    -- Every request carries the install id: the site counts downloads per install.
-    local sep = j.url:find('?', 1, true) and '&' or '?'
-    if installId then sep = sep .. 'i=' .. installId .. '&' end
+    local url = j.url
+    if j.path then
+        j.github = not githubDown
+        url = (j.github and URL.files or URL.base) .. j.path
+    end
+    -- Requests to the site carry the install id: it counts starts and downloads per install. GitHub gets none.
+    local sep = url:find('?', 1, true) and '&' or '?'
+    if installId and not j.github then sep = sep .. 'i=' .. installId .. '&' end
     -- The file lands at dest only by STATUSEX_ENDDOWNLOAD; the callback just records what happened.
     -- It throws «device or resource busy» when the native downloader is not free, and unguarded that kills the script.
-    local ok, err = pcall(downloadUrlToFile, j.url .. sep .. 't=' .. os.time(), j.dest, function(_, status)
+    local ok, err = pcall(downloadUrlToFile, url .. sep .. 't=' .. os.time(), j.dest, function(_, status)
         if status == moonloader.download_status.STATUSEX_ENDDOWNLOAD then j.done = true end
     end)
     if ok then return end
@@ -262,7 +283,7 @@ local function stepDownloads()
 end
 
 -- Anonymous stats: one GET, the answer is not read, one try; fields sorted so the URL is stable.
-local function queueEvent(name, fields)
+queueEvent = function(name, fields)
     if #evQueue >= EVENT_QUEUE_MAX then return end
     local q = { 'e=' .. name, 'v=' .. urlEncode(thisScript().version) }
     local keys = {}
@@ -524,7 +545,7 @@ local function ensureSocket()
             return
         end
         local tmp = DL_DIR .. '\\socket-' .. i .. '.tmp'
-        queueDownload(URL.base .. d.path, tmp, function(err)
+        queueFile(d.path, tmp, function(err)
             if err then fail(d.path .. ': ' .. err) return end
             local body = readFile(tmp)
             if not body or sha256(body) ~= d.sha256:lower() then
@@ -739,14 +760,18 @@ local BOOT_JS = [==[
 ]==]
 
 -- Shown when neither the network nor the cache has the real page.
+-- The logo font is hub/fonts/sofia-extra-condensed-latin.woff2 cut to «ARZHUB»: pyftsubset --text=ARZHUB --flavor=woff2 --layout-features='' --no-hinting --desubroutinize.
 local FALLBACK_HTML = [==[
 <!doctype html><html><head><meta charset="utf-8"><style>
+@font-face{font-family:'SofiaX';font-weight:800;src:url(data:font/woff2;base64,d09GMgABAAAAAAP4AA8AAAAAB+AAAAOeAAEAAAAAAAAAAAAAAAAAAAAAAAAAAAAAGhYbIBwwBmA/U1RBVEQAVBEICoRAg2kBNgIkAxwLEAAEIAWEdAcgG3gGCJ4FdotziDGsWpV5eWw/Vk0zeKK8vledDFKd9SdXOsHybU8QrvAcrbXZF02WxR0xO9O5F4sJIqVQOjyP7d4fwY5NpmVF1hVVtKmXhRSsC0X/A/hz/vtT9X1KMAJ5HvCNnnQvLuW+dYx9PoR6BerVMkR6PrmWgpWQartQ8mU/kf3eO2lvwnYnBPgAwBAiSAhQSQLIUuvsDhxcQAQAMFpUgRnzzn+MnasQOLsudQhECO5uRjhpWGEe0wag/niO7FSShdOKv6bBBsAVqnppZvy/C+eTogACkNcsBtKYCRFmQBQTyGK6e4tLAvS9KJX4CFduBCCdkwbgECY5ABAABjggipmAKBZVAL4ww1XNkRv3Xn6g6tSzyBXnHXPEgaRSSCJvPwIRApATKLgJvAEAXABgOIQhZHajPC8p3ksoZOfFdl5t7fzojitV58W023Q/RTfcTWqzQlu3dre08yQwFaq8x5S7Zfi7XtJWdv5lmXpJVRQOwyE/XAabLnSr6jxx1IwnZaLaPlbVSpmi7VPgEm057744rWjqUUkcvw3d7Vdlamz79ccTZccJ1dPe5pgPU1ZEtVlzJI7v09a2d1VPk2aNifNmadzMMUV1uBdXfkZVr0YpUzVUo1l/elj92bl7jPf2oDr4o31/UYe21ze17Jor3JRSjSp26fTGxnpnZzUqUbRhVnanlJSvRQvfS0+i0keqbS/r/5/10WBOZ2mJUoU/RVf07PDGHSVadSO9taI/1CvQ8lfGd1+9vpnZ/0qUiM/K4D/QuSPOf6z29ezOqm8yMt9U3Wm1j9o9wzoheIoNhLPXL9+/drdJ2xLVVf3WvtZR67ohs23j2uErTcku+fou7w7AJAS405OYMbeXdM5V4VvYcT4CvJjwYRrAi7cX5ka2q+wkOQ0AggwAwT8PrhD720cgnFUoHannQCQiWymQWwc5+FvXycpk7ASENGU1gCWj0yHAmjfpaz3gCCiKOn7RyOknOlokuOqiGJCQdnxQtYyoE/BzijBM3lxDHz93b5MDzUuqQ4adOYlAtBRSUVLWFnK3IFz3LcSTUGRSdAsJXYWrkYzDaGlsNVIRmmORVK7TkmGho6hIIJnzCq2AgTRFKg6PcPEQQvuG4m4mv0v6Rea+raUBpRejOhaHHHJYLDQRooZuyEmwoqLM1RSUy5/uOnOru88vAZkmYvnYQ62IFFoJ8bJ3wKP/26ZBzseWKCoJ4wbS7GtmAERWaQ4AAAA=) format('woff2')}
 *{box-sizing:border-box}
 html,body{margin:0;height:100%;background:transparent;font:14px/1.45 "Segoe UI",Arial,sans-serif;color:#f2f2f2}
 .win{height:100%;background:#1e1f22;border:1px solid rgba(255,255,255,.12);border-radius:8px;overflow:hidden}
-.head{height:42px;display:flex;align-items:center;gap:12px;padding:0 14px;background:#111213;border-bottom:1px solid rgba(255,255,255,.12)}
-.logo{font-weight:800;font-size:20px}.logo b{background:#ff6a1a;color:#111213;padding:0 5px;border-radius:4px}
-.x{margin-left:auto;cursor:pointer;color:#9a9a9a;font-size:20px}
+.head{height:46px;display:flex;align-items:center;gap:12px;padding:0 14px;background:#111213;border-bottom:1px solid rgba(255,255,255,.12)}
+.logo{font:800 24px/1 'SofiaX','Arial Narrow',sans-serif;letter-spacing:.5px;display:flex;align-items:center;gap:3px}
+.logo b{background:#ff6a1a;color:#111213;padding:1px 5px 0;border-radius:4px}
+.x{margin-left:auto;width:32px;height:32px;border-radius:6px;background:rgba(255,255,255,.06);display:flex;align-items:center;justify-content:center;color:#bdbdbd;font-size:18px;cursor:pointer}
+.x:hover{background:rgba(255,255,255,.12);color:#f2f2f2}
 .bar{padding:12px 14px;background:rgba(217,180,92,.10);color:#d9b45c}
 .body{padding:16px 14px}
 .hint{margin:0 0 14px;color:#b5b5b5}
@@ -771,11 +796,11 @@ setInterval(() => toLua('stat', ''), 1000);
 local FALLBACK_TEXT = {
     list = {
         bar = 'Нет связи со списком скриптов',
-        hint = 'Проверьте интернет и нажмите «Повторить». Если сайт arzhub.top в браузере открывается, а здесь нет - загрузку может блокировать антивирус: добавьте игру в его исключения и перезапустите игру.',
+        hint = 'Проверьте интернет и нажмите «Повторить».',
     },
     page = {
         bar = 'Не удалось загрузить окно менеджера',
-        hint = 'Список скриптов получен, но само окно не скачалось. Чаще всего загрузку блокирует антивирус: добавьте игру в его исключения, перезапустите игру и откройте /hub снова.',
+        hint = 'Список скриптов получен, но само окно не скачалось. Нажмите «Повторить», а если не поможет - перезапустите игру и откройте /hub снова.',
     },
 }
 
@@ -955,7 +980,7 @@ local function withPage(cb)
     if pageFetching then return end
     pageFetching = true
     local tmp = PAGE_DIR .. '\\hub.html.tmp'
-    queueDownload(URL.base .. ui.path, tmp, function(err)
+    queueFile(ui.path, tmp, function(err)
         pageFetching = false
         local body = not err and readFile(tmp) or nil
         removeIfExists(tmp)
@@ -1172,7 +1197,7 @@ local function installEntry(e, done)
     busy[id], results[id] = true, nil
     pushState()
     local tmp = target .. '.tmp'
-    queueDownload(URL.base .. e.path, tmp, function(err)
+    queueFile(e.path, tmp, function(err)
         if err then
             removeIfExists(tmp)
             finish(false, FAIL_TEXT[err] .. keep, err)
@@ -1283,7 +1308,7 @@ local function selfUpdate(announce)
     end
     busy[UPDATE_SCRIPT_ID], results[UPDATE_SCRIPT_ID] = true, nil
     pushState()
-    queueDownload(URL.base .. m.path, tmp, function(err)
+    queueFile(m.path, tmp, function(err)
         if err then
             removeIfExists(tmp)
             finish(false, FAIL_TEXT[err] .. TEXT.failKeep, err)
