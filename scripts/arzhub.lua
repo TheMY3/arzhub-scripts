@@ -1,6 +1,6 @@
 script_name('ArzHub')
 script_author('ArzHub')
-script_version('1.0.0')
+script_version('1.0.1')
 script_url('https://arzhub.top/hub')
 
 -- In-game manager for the ArzHub scripts: what is installed, what is out, install, update and remove in one click.
@@ -48,6 +48,8 @@ local CACHE_PATH = DATA_DIR .. '\\cache.json'
 local ID_PATH = DATA_DIR .. '\\id.txt'  -- Anonymous install id: kept apart from the cache, so clearing it is not a new install.
 local LOG_PATH = DATA_DIR .. '\\arzhub.log'
 local SELF_UPDATED_PATH = DATA_DIR .. '\\updated.txt'  -- Version the manager just updated itself to.
+-- Why the window page last failed to download; sent at the next load, a hung downloader drops it in its own session.
+local PAGE_FAIL_PATH = DATA_DIR .. '\\page-fail.txt'
 
 -- What the player reads, in chat and in the window.
 local TEXT = {
@@ -747,11 +749,12 @@ html,body{margin:0;height:100%;background:transparent;font:14px/1.45 "Segoe UI",
 .x{margin-left:auto;cursor:pointer;color:#9a9a9a;font-size:20px}
 .bar{padding:12px 14px;background:rgba(217,180,92,.10);color:#d9b45c}
 .body{padding:16px 14px}
+.hint{margin:0 0 14px;color:#b5b5b5}
 button{height:34px;padding:0 14px;border-radius:6px;border:0;font-weight:600;color:#111213;background:linear-gradient(180deg,#ffa31a,#ff6a1a);cursor:pointer}
 </style></head><body><div class="win">
 <div class="head"><div class="logo">ARZ<b>HUB</b></div><span class="x" data-act="close">&times;</span></div>
-<div class="bar">Нет связи со списком скриптов</div>
-<div class="body"><button data-act="retry">Повторить</button></div>
+<div class="bar">{{BAR}}</div>
+<div class="body"><p class="hint">{{HINT}}</p><button data-act="retry">Повторить</button></div>
 </div><script>
 const toLua = (kind, data) => parent.postMessage({ arzhub: true, kind: kind, data: data == null ? '' : String(data) }, '*');
 document.addEventListener('click', (e) => {
@@ -763,6 +766,23 @@ toLua('stat', '');
 setInterval(() => toLua('stat', ''), 1000);
 </script></body></html>
 ]==]
+
+-- 'list': no list at all; 'page': the list is here, the window page did not download.
+local FALLBACK_TEXT = {
+    list = {
+        bar = 'Нет связи со списком скриптов',
+        hint = 'Проверьте интернет и нажмите «Повторить». Если сайт arzhub.top в браузере открывается, а здесь нет - загрузку может блокировать антивирус: добавьте игру в его исключения и перезапустите игру.',
+    },
+    page = {
+        bar = 'Не удалось загрузить окно менеджера',
+        hint = 'Список скриптов получен, но само окно не скачалось. Чаще всего загрузку блокирует антивирус: добавьте игру в его исключения, перезапустите игру и откройте /hub снова.',
+    },
+}
+
+local function fallbackPage(kind)
+    local t = FALLBACK_TEXT[kind]
+    return (FALLBACK_HTML:gsub('{{(%u+)}}', function(k) return t[k:lower()] end)), 'fallback:' .. kind
+end
 
 -- ============================================================================
 -- CURSOR AND INPUT
@@ -928,7 +948,7 @@ local function withPage(cb)
     local html, ver = readFile(PAGE_PATH), readFile(PAGE_VERSION_PATH)
     if html and (not want or ver == want) then cb(html, 'ui:' .. tostring(ver)) return end
     if not want or pageFailed == want then
-        if html then cb(html, 'ui:' .. tostring(ver)) else cb(FALLBACK_HTML, 'fallback') end
+        if html then cb(html, 'ui:' .. tostring(ver)) else cb(fallbackPage(want and 'page' or 'list')) end
         return
     end
     pageWaiters[#pageWaiters + 1] = cb
@@ -939,7 +959,7 @@ local function withPage(cb)
         pageFetching = false
         local body = not err and readFile(tmp) or nil
         removeIfExists(tmp)
-        local outHtml, key = FALLBACK_HTML, 'fallback'
+        local outHtml, key = fallbackPage('page')
         -- The CDN serves an old file for minutes after a push: only a page carrying the announced version is cached.
         local version = body and body:match('<meta name="arzhub%-ui" content="([^"]+)"')
         if version == want and body:find('</html>', 1, true) then
@@ -949,6 +969,7 @@ local function withPage(cb)
         else
             pageFailed = want
             logLine('страница окна не скачалась: ' .. tostring(err or 'не та страница'))
+            writeFile(PAGE_FAIL_PATH, err or 'bad')
             if html then outHtml, key = html, 'ui:' .. tostring(ver) end
         end
         local waiters = pageWaiters
@@ -1369,7 +1390,7 @@ onCatalog = function(err, login)
         end
     end
     -- The fallback page has nothing to show once the list is back: the real one replaces it.
-    if not err and isOpen and openPageKey == 'fallback' and catalog.ui then
+    if not err and isOpen and openPageKey and openPageKey:find('^fallback') and catalog.ui then
         closeWindow('пришёл список, открываю настоящую страницу')
         wantOpen = true
         return
@@ -1575,6 +1596,10 @@ function main()
     justUpdated = updatedTo == thisScript().version
     bootQuery = startQuery()
     refreshCatalog(true)
+    -- Stats wait for the list request, so this goes out right after it, before anything can hang the downloader.
+    local pageFail = (readFile(PAGE_FAIL_PATH) or ''):match('^%l+$')
+    removeIfExists(PAGE_FAIL_PATH)
+    if pageFail then queueEvent('window_fail', { stage = 'page_' .. pageFail }) end
 
     while true do
         wait(0)
