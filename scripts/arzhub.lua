@@ -1,6 +1,6 @@
 script_name('ArzHub')
 script_author('ArzHub')
-script_version('1.0.3')
+script_version('1.0.4')
 script_url('https://arzhub.top/hub')
 
 -- In-game manager for the ArzHub scripts: what is installed, what is out, install, update and remove in one click.
@@ -20,10 +20,11 @@ pcall(ffi.cdef, [[
 -- The site's orange: the tag in its light end, highlights (versions, commands) in the peach of the window's command chips.
 local TAG = '{FFA31A}[ArzHub]{FFFFFF}: '
 local UPDATE_SCRIPT_ID = 'arzhub'
--- The list and stats go to the site; files come from GitHub, the site's proxy of the same repository is the fallback.
--- Some providers stall connections to Cloudflare after ~16 KB: the small list passes, a page or a script hangs.
+-- The list and stats go to the site; files come from the site's proxy of the repository, then its Russian mirror on
+-- GitFlic, then GitHub. Some providers stall Cloudflare after ~16 KB and block GitHub: the list passes, a script hangs.
 local URL = {
-    files = 'https://raw.githubusercontent.com/TheMY3/arzhub-scripts/main/',
+    files = 'https://raw.githubusercontent.com/arzhub-dev/arzhub-scripts/main/',
+    mirror = 'https://gitflic.ru/project/themy3/arzhub-scripts/blob/raw?file=',
     base = 'https://arzhub.top/hub/',
     manifest = 'https://arzhub.top/hub/manifest.json',
     releases = 'https://arzhub.top/hub',
@@ -38,6 +39,8 @@ local PORT_FIRST, PORT_LAST = 38260, 38270 -- Local HTTP channel from the page, 
 local CLIENT_TIMEOUT = 2 -- Seconds a page connection may take to send its request line.
 
 local DL_TIMEOUT = 15 -- Seconds per download.
+local STALL_AFTER = 5 -- Seconds without progress before a file download counts as stalled and the next source gets it.
+local SITE_STALL_TTL = 24 * 3600 -- Seconds a stalled site stays last for files: one stall hangs its connection for the session.
 local DL_GAP = 0.25   -- Seconds between downloads: a second downloadUrlToFile right after another fails with "device or resource busy".
 local DL_TRIES = 3    -- Starts of one download that may throw before it gives up.
 local EVENT_TIMEOUT = 5    -- Seconds for a stats request: it holds the only download slot meanwhile.
@@ -49,11 +52,16 @@ local ML_DIR = getWorkingDirectory()
 local DATA_DIR = ML_DIR .. '\\config\\ArzHub'
 local DL_DIR = DATA_DIR .. '\\dl'
 local CACHE_PATH = DATA_DIR .. '\\cache.json'
-local ID_PATH = DATA_DIR .. '\\id.txt'  -- Anonymous install id: kept apart from the cache, so clearing it is not a new install.
 local LOG_PATH = DATA_DIR .. '\\arzhub.log'
-local SELF_UPDATED_PATH = DATA_DIR .. '\\updated.txt'  -- Version the manager just updated itself to.
--- Why the window page last failed to download; sent at the next load, a hung downloader drops it in its own session.
-local PAGE_FAIL_PATH = DATA_DIR .. '\\page-fail.txt'
+-- The manager's small memory between loads, kept apart from the cache so clearing that is not a new install:
+-- id (anonymous install id), updatedTo (version a self-update just put in place), pageFail (why the window page
+-- did not download, sent at the next load), siteStalledAt (when the site stalled a file, see SITE_STALL_TTL),
+-- stallReport (the fallback event of that stall: stats from the held session never reach the site).
+local INI_PATH = DATA_DIR .. '\\ArzHub.ini'
+-- 1.0.3 and older kept them in separate files; an update from one of those still writes updated.txt.
+local LEGACY_STATE = {
+    id = DATA_DIR .. '\\id.txt', updatedTo = DATA_DIR .. '\\updated.txt', pageFail = DATA_DIR .. '\\page-fail.txt',
+}
 
 -- What the player reads, in chat and in the window.
 local TEXT = {
@@ -125,6 +133,42 @@ end
 -- No doesFileExist guard: removing a missing file is harmless, and the guard let leftovers survive on the live client.
 local function removeIfExists(path)
     os.remove(path)
+end
+
+-- ArzHub.ini: a [state] section of key=value lines, written whole on every change; an empty value drops the key.
+local state = {}
+
+local function saveState()
+    local keys = {}
+    for k, v in pairs(state) do
+        if v ~= '' then keys[#keys + 1] = k end
+    end
+    table.sort(keys)
+    local out = { '[state]' }
+    for _, k in ipairs(keys) do out[#out + 1] = k .. '=' .. state[k] end
+    writeFile(INI_PATH, table.concat(out, '\r\n') .. '\r\n')
+end
+
+local function setState(key, value)
+    state[key] = value ~= nil and tostring(value) or nil
+    saveState()
+end
+
+local function loadState()
+    for line in (readFile(INI_PATH) or ''):gmatch('[^\r\n]+') do
+        local k, v = line:match('^%s*([%w_]+)%s*=%s*(.-)%s*$')
+        if k then state[k] = v end
+    end
+    local moved = false
+    for key, path in pairs(LEGACY_STATE) do
+        local v = readFile(path)
+        if v then
+            state[key] = v:match('^%s*(.-)%s*$')
+            removeIfExists(path)
+            moved = true
+        end
+    end
+    if moved then saveState() end
 end
 
 local function fileSize(path)
@@ -216,7 +260,16 @@ local evQueue = {}         -- Stats requests: they take the slot only when no sc
 local installId = nil
 local dlActive = nil
 local dlFreeAt = 0
-local githubDown = false   -- GitHub failed a file this session: the rest come through the site.
+-- Where repository files come from, in order; a source another one stood in for is skipped for the rest of the session.
+-- The site comes first: a release is there at once and every download is counted. GitFlic is reachable where Cloudflare
+-- is stalled and GitHub blocked; GitHub, last, only while the repository stays public.
+local SOURCES = {
+    { id = 'site', base = URL.base, site = true },
+    { id = 'gitflic', base = URL.mirror },
+    { id = 'github', base = URL.files },
+}
+local sourceDown = {}
+local siteHung = false     -- A file stalled on the site this session: its connection is held, nothing else gets through.
 local dlFrozen = false     -- Own file replaced: a reload is coming, a download started now would call back into an unloaded script.
 
 -- onDone(err) runs from main(): err is nil, 'timeout', 'empty' or 'busy'; on success the file stays at dest.
@@ -225,52 +278,122 @@ local function queueDownload(url, dest, onDone)
 end
 
 -- A file of the arzhub-scripts repository by its path there; where it comes from is picked when it starts.
-local function queueFile(path, dest, onDone)
-    dlQueue[#dlQueue + 1] = { path = path, dest = dest, onDone = onDone }
+-- check(path): nil when the file is the one asked for, else why not ('broken', 'stale'); such a file counts as a failed
+-- source and the next one is tried. onDone gets the last error when every source failed.
+local function queueFile(path, dest, onDone, check)
+    local job = { path = path, dest = dest, onDone = onDone, check = check }
+    dlQueue[#dlQueue + 1] = job
+    return job
 end
 
-local queueEvent  -- Defined with the stats below; a GitHub failure reports through it.
+local queueEvent  -- Defined with the stats below; a source that failed reports through it.
+
+local function firstUp(from)
+    for i = from, #SOURCES do
+        if not sourceDown[SOURCES[i].id] then return i end
+    end
+end
+
+-- A stall or a timeout holds that source's connection: it is out for the session, and the site for a day.
+local function markDown(src, err)
+    sourceDown[src.id] = true
+    if src.site and (err == 'stall' or err == 'timeout') then
+        siteHung = true
+        state.siteStalledAt = tostring(os.time())
+        setState('stallReport', 'site_' .. err)
+    end
+end
 
 local function stepDownloads()
     local j = dlActive
     if j then
-        if not j.done and os.clock() - j.t0 < (j.timeout or DL_TIMEOUT) then return end
+        local now = os.clock()
+        local stalled = j.path and now - j.seen >= STALL_AFTER
+        if not j.done and now - j.t0 < (j.timeout or DL_TIMEOUT) and not stalled then return end
         dlActive = nil
-        dlFreeAt = os.clock() + DL_GAP
-        local err = not j.done and 'timeout' or (fileSize(j.dest) == 0 and 'empty') or nil
-        if err then removeIfExists(j.dest) end
-        if err and j.github then
-            -- Blocked or stalled GitHub: this file and the rest of the session go through the site.
-            githubDown = true
-            logLine('GitHub не отдал файл (' .. err .. '), дальше качаю через arzhub.top')
-            queueEvent('fallback', { why = err })
-            j.github = nil
-            table.insert(dlQueue, 1, j)
-        elseif err then
-            j.onDone(err)
-        else
-            j.onDone(nil)
+        dlFreeAt = now + DL_GAP
+        local err
+        if not j.done then
+            err = stalled and 'stall' or 'timeout'
+        elseif fileSize(j.at) == 0 then
+            err = 'empty'
+        elseif j.check then
+            err = j.check(j.at)
         end
+        if err then removeIfExists(j.at) end
+        if not j.path then
+            j.onDone(err)
+            return
+        end
+        local src = SOURCES[j.src]
+        if err then
+            j.fails[#j.fails + 1] = { src = src, err = err }
+            if err == 'stall' or err == 'timeout' then markDown(src, err) end
+            local nextSrc = firstUp(j.src + 1)
+            if nextSrc then
+                logLine(('%s не отдал %s (%s), пробую %s'):format(src.id, j.path, err, SOURCES[nextSrc].id))
+                j.src = nextSrc
+                table.insert(dlQueue, 1, j)
+                return
+            end
+            j.onDone(err)
+            return
+        end
+        -- Another source stood in: the ones before it are out for the session. Only now, since a failure every source
+        -- shares is the player's own disk, not the network; a stale file is a release minutes old, not a broken source.
+        for _, f in ipairs(j.fails) do
+            if f.err ~= 'stale' then
+                if not sourceDown[f.src.id] or f.err == 'stall' or f.err == 'timeout' then
+                    markDown(f.src, f.err)
+                    logLine(('%s не отдал файл (%s), дальше качаю с %s'):format(f.src.id, f.err, src.id))
+                end
+                queueEvent('fallback', { why = f.src.id .. '_' .. f.err })
+            end
+        end
+        removeIfExists(j.dest)
+        os.rename(j.at, j.dest)
+        j.onDone(nil)
         return
     end
     if dlFrozen or os.clock() < dlFreeAt then return end
     j = table.remove(dlQueue, 1) or table.remove(evQueue, 1)
     if not j then return end
-    removeIfExists(j.dest)
-    j.t0 = os.clock()
-    j.done = nil
-    dlActive = j
-    local url = j.url
-    if j.path then
-        j.github = not githubDown
-        url = (j.github and URL.files or URL.base) .. j.path
+    if siteHung and j.url then
+        -- Behind the stalled download nothing reaches the site this session: stats wait for a next load,
+        -- the list comes from a mirror without its start fields.
+        if j.event then
+            j.onDone('hung')
+            return
+        end
+        j.url, j.path = nil, 'manifest.json'
     end
-    -- Requests to the site carry the install id: it counts starts and downloads per install. GitHub gets none.
+    local url, toSite = j.url, true
+    if j.path then
+        if not j.src then
+            -- All down means none answered before: the last one gets it again rather than nobody.
+            j.src, j.fails = firstUp(1) or #SOURCES, {}
+        end
+        url, toSite = SOURCES[j.src].base .. j.path, SOURCES[j.src].site
+        -- Each source writes its own file: an abandoned download may still land later and must not overwrite this one.
+        j.at = j.dest .. '.' .. SOURCES[j.src].id
+    else
+        j.at = j.dest
+    end
+    removeIfExists(j.at)
+    j.t0 = os.clock()
+    j.seen = j.t0
+    j.done = nil
+    local attempt = {}
+    j.attempt = attempt
+    dlActive = j
+    -- Requests to the site carry the install id: it counts starts and downloads per install. Mirrors get none.
     local sep = url:find('?', 1, true) and '&' or '?'
-    if installId and not j.github then sep = sep .. 'i=' .. installId .. '&' end
+    if installId and toSite then sep = sep .. 'i=' .. installId .. '&' end
     -- The file lands at dest only by STATUSEX_ENDDOWNLOAD; the callback just records what happened.
     -- It throws «device or resource busy» when the native downloader is not free, and unguarded that kills the script.
-    local ok, err = pcall(downloadUrlToFile, url .. sep .. 't=' .. os.time(), j.dest, function(_, status)
+    local ok, err = pcall(downloadUrlToFile, url .. sep .. 't=' .. os.time(), j.at, function(_, status)
+        if j.attempt ~= attempt then return end
+        j.seen = os.clock()
         if status == moonloader.download_status.STATUSEX_ENDDOWNLOAD then j.done = true end
     end)
     if ok then return end
@@ -395,7 +518,11 @@ local function cleanupTmp()
     local entries = { catalog.manager }
     for _, e in ipairs(catalog.list) do entries[#entries + 1] = e end
     for _, e in ipairs(entries) do
-        if type(e.filename) == 'string' then removeIfExists(ML_DIR .. '\\' .. e.filename .. '.tmp') end
+        if type(e.filename) == 'string' then
+            local tmp = ML_DIR .. '\\' .. e.filename .. '.tmp'
+            removeIfExists(tmp)
+            for _, src in ipairs(SOURCES) do removeIfExists(tmp .. '.' .. src.id) end
+        end
     end
 end
 
@@ -551,6 +678,8 @@ local function ensureSocket()
         end
         local tmp = DL_DIR .. '\\socket-' .. i .. '.tmp'
         queueFile(d.path, tmp, function(err)
+            -- Every source handed out other bytes: retrying on /hub would not change that.
+            if err == 'broken' then fail(d.path .. ': хеш не совпал', true) return end
             if err then fail(d.path .. ': ' .. err) return end
             local body = readFile(tmp)
             if not body or sha256(body) ~= d.sha256:lower() then
@@ -560,6 +689,9 @@ local function ensureSocket()
             end
             staged[#staged + 1] = { tmp = tmp, target = ML_DIR .. '\\lib\\' .. target:gsub('/', '\\') }
             nextFile()
+        end, function(path)
+            local body = readFile(path)
+            if not body or sha256(body) ~= d.sha256:lower() then return 'broken' end
         end)
     end
     nextFile()
@@ -841,8 +973,8 @@ local FALLBACK_TEXT = {
 }
 
 local RETRY_REASON = {
-    timeout = 'сервер не ответил', empty = 'файл не скачался', busy = 'загрузка не началась',
-    broken = 'ответ сервера с ошибкой', bad = 'файл скачался с ошибкой',
+    timeout = 'сервер не ответил', stall = 'сервер не ответил', empty = 'файл не скачался', busy = 'загрузка не началась',
+    broken = 'файл скачался с ошибкой', bad = 'файл скачался с ошибкой',
 }
 
 local function retryFailText(err)
@@ -1040,12 +1172,18 @@ local function withPage(cb)
         else
             pageFailed, pageErr = want, err or 'bad'
             logLine('страница окна не скачалась: ' .. tostring(err or 'не та страница'))
-            writeFile(PAGE_FAIL_PATH, err or 'bad')
+            setState('pageFail', err or 'bad')
             if html then outHtml, key = html, 'ui:' .. tostring(ver) end
         end
         local waiters = pageWaiters
         pageWaiters = {}
         for _, w in ipairs(waiters) do w(outHtml, key) end
+    end, function(path)
+        -- A CDN or a filter may hand out an old page or a page of its own: only the announced version counts.
+        local body = readFile(path) or ''
+        if body:match('<meta name="arzhub%-ui" content="([^"]+)"') ~= want or not body:find('</html>', 1, true) then
+            return 'broken'
+        end
     end)
 end
 
@@ -1163,12 +1301,13 @@ local FAIL_TEXT = {
     timeout = 'Сервер не ответил.',
     empty = 'Файл не скачался.',
     broken = 'Файл скачался с ошибкой.',
-    stale = 'Новая версия ещё не успела разойтись, повторите через пару минут.',
+    stale = 'Обновление только что вышло и ещё недоступно. Повторите через пару минут.',
     replace = 'Не удалось записать файл: он занят другой программой или нет прав.',
     busy = 'Загрузка не началась.',
+    stall = 'Сервер не ответил.',
 }
 -- Failures the manual download gets around; a stale CDN passes by itself, a locked file stays locked.
-local FAIL_MANUAL = { timeout = true, empty = true, broken = true, busy = true }
+local FAIL_MANUAL = { timeout = true, stall = true, empty = true, broken = true, busy = true }
 
 -- keep: the failKeep line for an update, '' for a first install; manual: the manualScript or manualManager line.
 local function failText(err, keep, manual)
@@ -1250,7 +1389,7 @@ local function installEntry(e, done)
     busy[id], results[id] = true, nil
     pushState()
     local tmp = target .. '.tmp'
-    queueFile(e.path, tmp, function(err)
+    local job = queueFile(e.path, tmp, function(err)
         if err then
             removeIfExists(tmp)
             finish(false, failText(err, keep, TEXT.manualScript), err)
@@ -1301,6 +1440,7 @@ local function installEntry(e, done)
         end
         finish(true, scan.path and TEXT.okUpdate:format(e.version) or TEXT.okInstall)
     end)
+    job.check = function(path) return checkBuild(path, e.version, scan.localVersion) end
 end
 
 local function deleteEntry(e)
@@ -1361,7 +1501,7 @@ local function selfUpdate(announce)
     end
     busy[UPDATE_SCRIPT_ID], results[UPDATE_SCRIPT_ID] = true, nil
     pushState()
-    queueFile(m.path, tmp, function(err)
+    local job = queueFile(m.path, tmp, function(err)
         if err then
             removeIfExists(tmp)
             finish(false, failText(err, TEXT.failKeep, TEXT.manualManager), err)
@@ -1375,7 +1515,7 @@ local function selfUpdate(announce)
         end
         selfReplaced, dlFrozen = true, true
         -- The new copy says so in the chat once it runs: the window goes away with the old one.
-        writeFile(SELF_UPDATED_PATH, m.version)
+        setState('updatedTo', m.version)
         if autoReboot() then
             -- ML-AutoReboot may reload us before the outbox drains: a queued close would leave the window behind.
             finish(true, TEXT.selfUpdated:format(m.version))
@@ -1385,6 +1525,7 @@ local function selfUpdate(announce)
         end
         reloadPending = true
     end)
+    job.check = function(path) return checkBuild(path, m.version, own) end
 end
 
 local function runCommand(e, cmd)
@@ -1678,23 +1819,33 @@ function main()
     -- A fresh bootstrap per script load, so an updated script never meets its old JS in the page.
     bootVersion = thisScript().version .. '-' .. os.time()
     token = newToken()
-    installId = (readFile(ID_PATH) or ''):match('^%x+$')
+    loadState()
+    installId = (state.id or ''):match('^%x+$')
     if not installId or #installId ~= 32 then
         installId = newToken(32)
-        writeFile(ID_PATH, installId)
+        setState('id', installId)
+    end
+    -- A site that stalled a file lately goes last for files; the list and stats still go there, they are small.
+    local stalledAt = tonumber(state.siteStalledAt)
+    if stalledAt and os.time() - stalledAt < SITE_STALL_TTL then
+        sourceDown.site = true
+        logLine('arzhub.top недавно зависал на файлах: качаю с зеркала')
     end
     -- An installed LuaSocket needs no list: /hub must not wait for the site.
     if tryRequire() then socketState = socketReady() end
     -- Right after a self-update the load line says «Обновлён до» instead of «Загружен».
-    local updatedTo = readFile(SELF_UPDATED_PATH)
-    removeIfExists(SELF_UPDATED_PATH)
+    local updatedTo = state.updatedTo
+    if updatedTo then setState('updatedTo', nil) end
     justUpdated = updatedTo == thisScript().version
     bootQuery = startQuery()
     refreshCatalog(true)
     -- Stats wait for the list request, so this goes out right after it, before anything can hang the downloader.
-    local pageFail = (readFile(PAGE_FAIL_PATH) or ''):match('^%l+$')
-    removeIfExists(PAGE_FAIL_PATH)
+    local pageFail = (state.pageFail or ''):match('^%l+$')
+    if state.pageFail then setState('pageFail', nil) end
     if pageFail then queueEvent('window_fail', { stage = 'page_' .. pageFail }) end
+    local stallReport = (state.stallReport or ''):match('^[%l_]+$')
+    if state.stallReport then setState('stallReport', nil) end
+    if stallReport then queueEvent('fallback', { why = stallReport }) end
 
     while true do
         wait(0)
