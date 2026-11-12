@@ -1,6 +1,6 @@
 script_name('ArzHub')
 script_author('ArzHub')
-script_version('1.0.4')
+script_version('1.0.5')
 script_url('https://arzhub.top/hub')
 
 -- In-game manager for the ArzHub scripts: what is installed, what is out, install, update and remove in one click.
@@ -20,8 +20,8 @@ pcall(ffi.cdef, [[
 -- The site's orange: the tag in its light end, highlights (versions, commands) in the peach of the window's command chips.
 local TAG = '{FFA31A}[ArzHub]{FFFFFF}: '
 local UPDATE_SCRIPT_ID = 'arzhub'
--- The list and stats go to the site; files come from the site's proxy of the repository, then its Russian mirror on
--- GitFlic, then GitHub. Some providers stall Cloudflare after ~16 KB and block GitHub: the list passes, a script hangs.
+-- The list and stats go to the site; files come from GitHub, then the repository's Russian mirror on GitFlic, then the
+-- site's proxy. Some providers stall Cloudflare after ~16 KB and block GitHub: the list passes, a script hangs.
 local URL = {
     files = 'https://raw.githubusercontent.com/arzhub-dev/arzhub-scripts/main/',
     mirror = 'https://gitflic.ru/project/themy3/arzhub-scripts/blob/raw?file=',
@@ -40,7 +40,7 @@ local CLIENT_TIMEOUT = 2 -- Seconds a page connection may take to send its reque
 
 local DL_TIMEOUT = 15 -- Seconds per download.
 local STALL_AFTER = 5 -- Seconds without progress before a file download counts as stalled and the next source gets it.
-local SITE_STALL_TTL = 24 * 3600 -- Seconds a stalled site stays last for files: one stall hangs its connection for the session.
+local STALL_TTL = 24 * 3600 -- Seconds a source that stalled is skipped for files: a stall holds its connection for the session.
 local DL_GAP = 0.25   -- Seconds between downloads: a second downloadUrlToFile right after another fails with "device or resource busy".
 local DL_TRIES = 3    -- Starts of one download that may throw before it gives up.
 local EVENT_TIMEOUT = 5    -- Seconds for a stats request: it holds the only download slot meanwhile.
@@ -55,8 +55,8 @@ local CACHE_PATH = DATA_DIR .. '\\cache.json'
 local LOG_PATH = DATA_DIR .. '\\arzhub.log'
 -- The manager's small memory between loads, kept apart from the cache so clearing that is not a new install:
 -- id (anonymous install id), updatedTo (version a self-update just put in place), pageFail (why the window page
--- did not download, sent at the next load), siteStalledAt (when the site stalled a file, see SITE_STALL_TTL),
--- stallReport (the fallback event of that stall: stats from the held session never reach the site).
+-- did not download, sent at the next load), <source>StalledAt (when that source stalled a file, see STALL_TTL;
+-- 1.0.4 wrote siteStalledAt), stallReport (the fallback event of a site stall: the held session's stats never left).
 local INI_PATH = DATA_DIR .. '\\ArzHub.ini'
 -- 1.0.3 and older kept them in separate files; an update from one of those still writes updated.txt.
 local LEGACY_STATE = {
@@ -261,12 +261,13 @@ local installId = nil
 local dlActive = nil
 local dlFreeAt = 0
 -- Where repository files come from, in order; a source another one stood in for is skipped for the rest of the session.
--- The site comes first: a release is there at once and every download is counted. GitFlic is reachable where Cloudflare
--- is stalled and GitHub blocked; GitHub, last, only while the repository stays public.
+-- GitHub first, the site last: a file stalled on the site holds its connection, and the list and stats behind it, for the
+-- whole session. GitFlic is reachable where GitHub is blocked; it also has a release the moment GitHub still serves the
+-- old file, so a stale answer moves on to it.
 local SOURCES = {
-    { id = 'site', base = URL.base, site = true },
-    { id = 'gitflic', base = URL.mirror },
     { id = 'github', base = URL.files },
+    { id = 'gitflic', base = URL.mirror },
+    { id = 'arzhub', base = URL.base, site = true },
 }
 local sourceDown = {}
 local siteHung = false     -- A file stalled on the site this session: its connection is held, nothing else gets through.
@@ -294,14 +295,16 @@ local function firstUp(from)
     end
 end
 
--- A stall or a timeout holds that source's connection: it is out for the session, and the site for a day.
+-- A stall or a timeout holds that source's connection: it is out for the session and skipped for a day after.
 local function markDown(src, err)
     sourceDown[src.id] = true
-    if src.site and (err == 'stall' or err == 'timeout') then
+    if err ~= 'stall' and err ~= 'timeout' then return end
+    state[src.id .. 'StalledAt'] = tostring(os.time())
+    if src.site then
         siteHung = true
-        state.siteStalledAt = tostring(os.time())
-        setState('stallReport', 'site_' .. err)
+        state.stallReport = src.id .. '_' .. err
     end
+    saveState()
 end
 
 local function stepDownloads()
@@ -1825,11 +1828,17 @@ function main()
         installId = newToken(32)
         setState('id', installId)
     end
-    -- A site that stalled a file lately goes last for files; the list and stats still go there, they are small.
-    local stalledAt = tonumber(state.siteStalledAt)
-    if stalledAt and os.time() - stalledAt < SITE_STALL_TTL then
-        sourceDown.site = true
-        logLine('arzhub.top недавно зависал на файлах: качаю с зеркала')
+    -- A source that stalled a file lately is skipped for files; the list and stats still go to the site, they are small.
+    if state.siteStalledAt then
+        state.arzhubStalledAt, state.siteStalledAt = state.arzhubStalledAt or state.siteStalledAt, nil
+        saveState()
+    end
+    for _, src in ipairs(SOURCES) do
+        local at = tonumber(state[src.id .. 'StalledAt'])
+        if at and os.time() - at < STALL_TTL then
+            sourceDown[src.id] = true
+            logLine(src.id .. ' недавно зависал на файлах: пропускаю его')
+        end
     end
     -- An installed LuaSocket needs no list: /hub must not wait for the site.
     if tryRequire() then socketState = socketReady() end
